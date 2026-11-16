@@ -335,3 +335,62 @@ describe('leaving the lobby', () => {
 		expect(lobbyMocks.emit).toHaveBeenCalledWith('lobby:leave', undefined);
 	});
 });
+
+describe('lobby seats and team colours', () => {
+	it('always shows six seat markers', () => {
+		const { container } = render(<LobbyPage />);
+
+		// One marker per seat in the lobby, whether or not it is taken.
+		expect(container.querySelectorAll('[data-seat]')).toHaveLength(6);
+	});
+
+	it('marks three seats for Team 1 when Team 1 has three players', () => {
+		const { container } = render(<LobbyPage />);
+
+		// The default roster has three players on Team 1 (team "a").
+		expect(container.querySelectorAll('[data-seat="a"]')).toHaveLength(3);
+	});
+
+	it('marks a seat as waiting for a player who has no team yet', () => {
+		configureLobby({ players: withTeams({ u1: null }) });
+		const { container } = render(<LobbyPage />);
+
+		// u1 is in the lobby but has not picked a team.
+		expect(container.querySelectorAll('[data-seat="waiting"]')).toHaveLength(1);
+	});
+
+	it('shows one open seat when Team 1 has two players', () => {
+		configureLobby({ players: withTeams({ u1: null }) });
+		render(<LobbyPage />);
+
+		// Team 1 has two of its three seats taken; Team 2 is full.
+		expect(screen.getAllByText('Open seat')).toHaveLength(1);
+	});
+
+	it('colours the Team 1 heading with the primary colour', () => {
+		render(<LobbyPage />);
+
+		expect(screen.getByRole('heading', { name: 'Team 1' }).className).toContain('text-primary');
+	});
+
+	it('colours the Team 2 heading with the secondary colour', () => {
+		render(<LobbyPage />);
+
+		expect(screen.getByRole('heading', { name: 'Team 2' }).className).toContain('text-secondary');
+	});
+
+	it('does not put a coloured top border on the team boxes', () => {
+		const { container } = render(<LobbyPage />);
+
+		// The accent stripe along the top of each team box was removed.
+		expect(container.querySelectorAll('[class*="border-t-"]')).toHaveLength(0);
+	});
+
+	it('shows the seconds left as a large number while the countdown runs', () => {
+		configureLobby({ lobby: { countdownSecondsRemaining: 3 } });
+		render(<LobbyPage />);
+
+		// The number is shown on its own, next to the "Starting match in" label.
+		expect(screen.getByText('3')).toBeTruthy();
+	});
+});

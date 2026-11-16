@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import type { FormEvent } from 'react';
+import { Fragment, useEffect, useState } from 'react';
+import type { CSSProperties, FormEvent } from 'react';
 import RequireAuth from '../login/protected';
 import { useAuth } from '../login/context';
 import HomeTopBar from '../_home/components/topbar';
@@ -9,10 +9,45 @@ import PageLoader from '../_shared/page-loader';
 import { useLobbySocket } from './socket-context';
 import type { TeamId } from './socket-context';
 
-const TEAMS: { id: TeamId; name: string; accent: string }[] = [
-	{ id: 'a', name: 'Team 1', accent: 'border-t-primary' },
-	{ id: 'b', name: 'Team 2', accent: 'border-t-secondary' },
+const TEAMS: { id: TeamId; name: string; nameColor: string; fill: string; check: string }[] = [
+	{ id: 'a', name: 'Team 1', nameColor: 'text-primary', fill: 'bg-primary text-on-primary', check: 'stroke-primary' },
+	{ id: 'b', name: 'Team 2', nameColor: 'text-secondary', fill: 'bg-secondary text-page', check: 'stroke-secondary' },
 ];
+
+const SEATS = 6;
+const TEAM_SIZE = 3;
+
+const BUTTON = 'lb-press inline-flex min-h-11 items-center justify-center rounded-[10px] px-5 text-sm font-semibold disabled:cursor-not-allowed';
+const QUIET = 'border border-line text-ink hover:bg-raised disabled:text-muted disabled:hover:bg-transparent';
+const FILLED = 'lb-press-lift disabled:opacity-50';
+
+// One marker per lobby seat: team colours first, then players without a team, then empty seats.
+function SeatPips({ teamA, teamB, waiting }: { teamA: number; teamB: number; waiting: number }) {
+	const seats = [
+		...Array<string>(teamA).fill('a'),
+		...Array<string>(teamB).fill('b'),
+		...Array<string>(waiting).fill('waiting'),
+	].slice(0, SEATS);
+	while (seats.length < SEATS) {
+		seats.push('empty');
+	}
+	return (
+		<div aria-hidden="true" className="flex gap-1">
+			{seats.map((seat, i) => <span key={i} data-seat={seat} className="lb-seat-pip" />)}
+		</div>
+	);
+}
+
+// The line under the status row: it drains over the seconds left when the countdown started.
+function CountdownDrain({ seconds }: { seconds: number }) {
+	const [from] = useState(seconds);
+	return (
+		<div
+			className="lb-drain h-full bg-primary"
+			style={{ '--from': Math.min(from / 5, 1), animationDuration: `${from}s` } as CSSProperties}
+		/>
+	);
+}
 
 function LobbyContent() {
 	const { user } = useAuth();
@@ -42,26 +77,73 @@ function LobbyContent() {
 	}
 
 	const players = lobby?.players ?? [];
-	const full = (lobby?.playerCount ?? 0) >= 6;
+	const full = (lobby?.playerCount ?? 0) >= SEATS;
 	const isLoading = !connected || !lobby;
+	const seconds = lobby?.countdownSecondsRemaining ?? null;
+	const counting = !isLoading && Boolean(currentPlayer) && seconds !== null;
+
+	let status = 'Fill both teams with connected players to ready up';
+	if (isLoading) {
+		status = 'Connecting to lobby…';
+	} else if (!currentPlayer) {
+		status = full ? 'This lobby is full.' : 'You have not joined this lobby yet.';
+	} else if (seconds !== null) {
+		status = `Starting match in ${seconds}…`;
+	} else if (lobby.canReady) {
+		status = `${lobby.readyCount}/6 players ready`;
+	}
 
 	return (
 		<div className="flex min-h-screen flex-col bg-page font-sans text-ink">
 			<PageLoader variant="clash" />
 			<HomeTopBar />
-			<main className="flex-1 px-5 py-10 sm:px-8">
-				<div className="mx-auto max-w-[1180px]">
-					<header className="mb-8">
-						<div>
-							<h1 className="text-3xl font-bold tracking-tight">Join the lobby</h1>
-							<p className="mt-2 text-sm text-muted">Join the six-player lobby, then choose a team.</p>
-						</div>
+			<main className="flex-1 px-5 pt-12 pb-16">
+				<div className="mx-auto flex max-w-[1040px] flex-col gap-8">
+					<header className="flex flex-col gap-2">
+						<h1 className="text-4xl font-extrabold leading-[1.05] tracking-[-0.035em]">Lobby</h1>
+						<p className="text-[15px] text-muted">Six players, two teams of three.</p>
 					</header>
 
+					<div>
+						<div className="flex flex-wrap items-center justify-between gap-x-8 gap-y-4 pb-5">
+							<div className="flex min-h-11 flex-wrap items-center gap-x-6 gap-y-4">
+								<div className="flex items-center gap-3">
+									<SeatPips
+										teamA={players.filter((player) => player.team === 'a').length}
+										teamB={players.filter((player) => player.team === 'b').length}
+										waiting={players.filter((player) => player.team === null).length}
+									/>
+									<span className="font-mono text-sm font-semibold">
+										{lobby?.playerCount ?? 0} / {SEATS}<span className="sr-only"> players in the lobby</span>
+									</span>
+								</div>
+								<div role="status" aria-live="polite" className="flex items-center gap-3 text-sm text-muted">
+									{counting ? (
+										<>
+											<span className="sr-only">{status}</span>
+											<span aria-hidden="true">Starting match in</span>
+											<span key={seconds} aria-hidden="true" className="lb-second font-mono text-[28px] font-bold leading-none text-ink">{seconds}</span>
+										</>
+									) : (
+										<span key={status} className="lb-fade-in">{status}</span>
+									)}
+								</div>
+							</div>
+							{currentPlayer
+								? <button onClick={() => send('lobby:leave')} disabled={!connected} className={`${BUTTON} ${QUIET}`}>Leave lobby</button>
+								: <button onClick={() => send('lobby:join')} disabled={!connected || full} className={`${BUTTON} ${FILLED} bg-primary text-on-primary`}>Join lobby</button>}
+						</div>
+						<div className="h-0.5 bg-line">
+							{counting && seconds !== null && <CountdownDrain seconds={seconds} />}
+						</div>
+					</div>
+
+					{error && <div role="alert" className="rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">{error.message}</div>}
+
 					{currentPlayer && (
-						<form onSubmit={saveName} className="mb-5 flex flex-col gap-3 rounded-2xl border border-line bg-raised p-5 sm:flex-row sm:items-end">
-							<div className="flex-1">
-								<label htmlFor="lobby-display-name" className="mb-1 block text-sm font-medium">Your display name</label>
+						<form onSubmit={saveName} className="lb-fade-in flex flex-col gap-1.5">
+							<label htmlFor="lobby-display-name" className="text-sm font-medium">Your display name</label>
+							<div className="flex flex-wrap items-center gap-3">
 								<input
 									id="lobby-display-name"
 									value={nameInput || currentPlayer.displayName}
@@ -71,101 +153,81 @@ function LobbyContent() {
 									}}
 									maxLength={24}
 									placeholder="Enter a name"
-									className="w-full rounded-xl border border-line bg-page px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/30"
+									className="h-11 w-full max-w-xs rounded-lg border border-line bg-page px-3.5 text-[15px] outline-none transition-[border-color,box-shadow] duration-200 focus:border-primary focus:ring-[3px] focus:ring-primary/20"
 								/>
-								<p className="mt-1 text-xs text-muted">This name is visible to everyone in the lobby.</p>
+								<button type="submit" disabled={!connected || nameInput.trim().length < 1 || nameInput.trim().length > 24 || nameInput.trim() === currentPlayer.displayName} className={`${BUTTON} ${QUIET}`}>Save name</button>
+								{nameSaved && <span role="status" className="lb-fade-in text-sm font-medium text-primary">Saved</span>}
 							</div>
-							<div className="flex items-center gap-3">
-								<button type="submit" disabled={!connected || nameInput.trim().length < 1 || nameInput.trim().length > 24 || nameInput.trim() === currentPlayer.displayName} className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-on-primary hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50">Save name</button>
-								{nameSaved && <span role="status" className="text-sm font-medium text-primary">Saved</span>}
-							</div>
+							<p className="text-xs text-muted">This name is visible to everyone in the lobby.</p>
 						</form>
 					)}
 
-					<div className="mb-5 flex items-center justify-between rounded-2xl border border-line bg-raised px-5 py-4">
-						<div>
-							<div className="text-sm text-muted">Lobby players</div>
-							<div className="mt-1 text-xl font-semibold">{lobby?.playerCount ?? 0} <span className="text-base font-normal text-muted">/ 6 players</span></div>
-						</div>
-						<div aria-live="polite" className="text-right text-sm text-muted">{isLoading ? 'Connecting to lobby…' : 'Live updates'}</div>
-					</div>
-
-					{error && <div role="alert" className="mb-5 rounded-2xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">{error.message}</div>}
-
-					{!currentPlayer && (
-						<div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-line bg-raised p-5">
-							<div className="text-sm text-muted">{full ? 'This lobby is full.' : 'You have not joined this lobby yet.'}</div>
-							<button onClick={() => send('lobby:join')} disabled={!connected || full} className="rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-on-primary hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50">Join lobby</button>
-						</div>
-					)}
-
-					<div className="grid gap-5 md:grid-cols-2">
+					<div className="grid items-center gap-5 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
 						{TEAMS.map((team) => {
 							const teamPlayers = players.filter((player) => player.team === team.id);
 							const otherTeam: TeamId = team.id === 'a' ? 'b' : 'a';
-							const otherTeamFull = players.filter((player) => player.team === otherTeam).length >= 3;
+							const otherTeamFull = players.filter((player) => player.team === otherTeam).length >= TEAM_SIZE;
 							const isCurrentTeam = currentPlayer?.team === team.id;
 							const isOtherTeam = currentPlayer?.team === otherTeam;
+							const joinDisabled = !connected || (!isCurrentTeam && teamPlayers.length >= TEAM_SIZE) || isCurrentTeam;
+							const openSeats = Math.max(TEAM_SIZE - teamPlayers.length, 0);
 
 							return (
-								<section key={team.id} className={`rounded-2xl border border-line border-t-4 ${team.accent} bg-raised p-5`}>
-									<div className="mb-5 flex items-center justify-between">
-										<h2 className="text-xl font-semibold">{team.name}</h2>
-										<span className="rounded-full bg-page px-3 py-1 text-sm text-muted">{teamPlayers.length}/3</span>
-									</div>
-									<ul className="mb-5 space-y-2" aria-label={`${team.name} players`}>
-										{teamPlayers.length === 0 && <li className="rounded-md border border-dashed border-line px-4 py-5 text-center text-sm text-muted">No players yet</li>}
-										{teamPlayers.map((player) => (
-											<li key={player.userId} className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-page px-4 py-3 text-sm">
-												<span className="flex items-center gap-2">
-													{player.displayName}
-													{player.userId === user?.id && <span className="text-xs font-medium text-primary">You</span>}
-												</span>
-												<span className="flex items-center gap-3">
-													{!player.connected
-														? <span className="text-xs text-muted">Reconnecting…</span>
-														: <span className={`text-xs font-medium ${player.ready ? 'text-primary' : 'text-muted'}`}>{player.ready ? 'Ready' : 'Not ready'}</span>}
-													{player.userId === user?.id && (
-														<button
-															onClick={() => send('lobby:set-ready', !player.ready)}
-															disabled={!connected || !lobby?.canReady}
-															className="rounded-lg border border-line px-3 py-1 text-xs font-semibold hover:bg-raised disabled:cursor-not-allowed disabled:opacity-50"
-														>
-															{player.ready ? 'Unready' : 'Ready up'}
-														</button>
-													)}
-												</span>
-											</li>
-										))}
-									</ul>
-									{currentPlayer && (
-										<button
-											onClick={() => send('lobby:join-team', team.id)}
-											disabled={!connected || (!isCurrentTeam && teamPlayers.length >= 3) || isCurrentTeam}
-											className="w-full rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-on-primary hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-										>
-											{isCurrentTeam ? 'Your team' : isOtherTeam ? (otherTeamFull ? 'Other team is full' : `Switch to ${team.name}`) : teamPlayers.length >= 3 ? 'Team full' : `Join ${team.name}`}
-										</button>
-									)}
-								</section>
+								<Fragment key={team.id}>
+									{team.id === 'b' && <span aria-hidden="true" className="text-center font-mono text-[13px] font-bold tracking-[0.2em] text-muted">VS</span>}
+									<section className="flex flex-col gap-5 rounded-xl border border-line bg-surface p-6">
+										<div className="flex items-baseline justify-between gap-3">
+											<h2 className={`text-[22px] font-bold tracking-[-0.02em] ${team.nameColor}`}>{team.name}</h2>
+											<span className="font-mono text-[13px] font-semibold text-muted">{teamPlayers.length}/{TEAM_SIZE}</span>
+										</div>
+										<ul className="flex flex-col gap-2" aria-label={`${team.name} players`}>
+											{teamPlayers.map((player) => (
+												<li key={player.userId} className="lb-seat-in flex min-h-[60px] flex-wrap items-center justify-between gap-3 rounded-lg bg-page py-2 pr-2 pl-4">
+													<span className="flex items-baseline gap-2.5">
+														<span className="text-[15px] font-medium">{player.displayName}</span>
+														{player.userId === user?.id && <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-muted">You</span>}
+													</span>
+													<span className="flex items-center gap-3.5">
+														{!player.connected
+															? <span className="text-[13px] font-medium text-muted">Reconnecting…</span>
+															: (
+																<span className="inline-flex items-center gap-1.5">
+																	{player.ready && <svg viewBox="0 0 16 16" aria-hidden="true" className={`lb-check ${team.check}`}><path d="M3 8.5l3.2 3.2L13 4.8" /></svg>}
+																	<span className={`text-[13px] font-medium transition-colors duration-300 ${player.ready ? 'text-ink' : 'text-muted'}`}>{player.ready ? 'Ready' : 'Not ready'}</span>
+																</span>
+															)}
+														{player.userId === user?.id && (
+															<button
+																onClick={() => send('lobby:set-ready', !player.ready)}
+																disabled={!connected || !lobby?.canReady}
+																className={`${BUTTON} px-4 ${player.ready ? QUIET : `${FILLED} ${team.fill}`}`}
+															>
+																{player.ready ? 'Unready' : 'Ready up'}
+															</button>
+														)}
+													</span>
+												</li>
+											))}
+											{Array.from({ length: openSeats }, (_, i) => (
+												<li key={`open-${i}`} className="lb-fade-in flex min-h-[60px] items-center rounded-lg border border-dashed border-line px-4 text-sm text-muted">Open seat</li>
+											))}
+										</ul>
+										{currentPlayer && (
+											<button
+												onClick={() => send('lobby:join-team', team.id)}
+												disabled={joinDisabled}
+												className={`${BUTTON} w-full ${joinDisabled ? QUIET : `${FILLED} ${team.fill}`}`}
+											>
+												{isCurrentTeam ? 'Your team' : isOtherTeam ? (otherTeamFull ? 'Other team is full' : `Switch to ${team.name}`) : teamPlayers.length >= TEAM_SIZE ? 'Team full' : `Join ${team.name}`}
+											</button>
+										)}
+									</section>
+								</Fragment>
 							);
 						})}
 					</div>
 
-					{currentPlayer && (
-						<div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-line bg-raised p-5">
-							<button onClick={() => send('lobby:leave')} disabled={!connected} className="rounded-xl border border-line px-4 py-2 text-sm font-semibold hover:bg-page disabled:opacity-50">Leave lobby</button>
-							<div role="status" aria-live="polite" className="text-sm font-medium text-muted">
-								{lobby?.countdownSecondsRemaining !== null && lobby?.countdownSecondsRemaining !== undefined
-									? `Starting match in ${lobby.countdownSecondsRemaining}…`
-									: lobby?.canReady
-										? `${lobby.readyCount}/6 players ready`
-										: 'Fill both teams with connected players to ready up'}
-							</div>
-						</div>
-					)}
-
-					{matchReadiness && <div role="status" className="mt-5 rounded-2xl border border-primary/40 bg-primary/10 px-4 py-3 text-sm text-ink">All six players are ready. Lobby {matchReadiness.lobbyId} is ready for the match component.</div>}
+					{matchReadiness && <div role="status" className="lb-fade-in rounded-xl border border-line bg-surface px-4 py-3 text-sm text-ink">All six players are ready. Lobby {matchReadiness.lobbyId} is ready for the match component.</div>}
 				</div>
 			</main>
 		</div>
