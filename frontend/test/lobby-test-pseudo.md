@@ -42,3 +42,12 @@
 
  // Players should be able to leave the lobby
  //  - Clicking "Leave lobby" should send a leave event to the server
+
+ // Lobby should show the seats without coloured stripes on the team boxes
+ //  - The lobby should always display six seat markers
+ //  - When Team 1 has three players, three seat markers should be marked for Team 1
+ //  - When a player has joined but has no team, one seat marker should be marked as waiting
+ //  - When Team 1 has two players, Team 1 should display one "Open seat"
+ //  - The Team 1 heading should use the primary colour and the Team 2 heading the secondary colour
+ //  - The team boxes should not have a coloured top border
+ //  - When a countdown is running, the seconds left should be displayed as a large number

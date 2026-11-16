@@ -453,7 +453,44 @@ html.lb-intro-seen { --lb-intro-delay: 0.1s; }
   animation: lb-tip 0.7s cubic-bezier(0.6, 0.05, 0.4, 0.95) forwards 0.1s;
 }
 
+/* Lobby: buttons press in fast and ease back; filled ones lift a little on hover. */
+.lb-press { transition: transform 0.18s cubic-bezier(0.2, 0.7, 0.2, 1), background-color 0.25s ease, color 0.25s ease, border-color 0.25s ease, opacity 0.25s ease; }
+.lb-press:active:not(:disabled) { transform: scale(0.96); transition-duration: 0.06s; }
+.lb-press-lift:hover:not(:disabled) { transform: translateY(-1px); }
+
+/* Lobby: one marker per seat, filled with the colour of the team sitting in it. */
+.lb-seat-pip {
+  width: 22px; height: 8px; border-radius: 2px;
+  background: var(--lb-line);
+  transition: background-color 0.45s ease, transform 0.45s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.lb-seat-pip[data-seat="a"] { background: var(--lb-primary); transform: scaleY(1.25); }
+.lb-seat-pip[data-seat="b"] { background: var(--lb-secondary); transform: scaleY(1.25); }
+.lb-seat-pip[data-seat="waiting"] { background: var(--lb-muted); }
+
+/* Lobby: a player slides into their seat, the ready check mark draws itself,
+   each countdown second drops in and a line drains while the countdown runs. */
+@keyframes lb-seat-in { from { opacity: 0; transform: translateY(10px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes lb-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes lb-draw { to { stroke-dashoffset: 0; } }
+@keyframes lb-second-in { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: none; } }
+@keyframes lb-drain { from { transform: scaleX(var(--from, 1)); } to { transform: scaleX(0); } }
+.lb-seat-in { animation: lb-seat-in 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.lb-fade-in { animation: lb-fade-in 0.4s ease both; }
+.lb-check {
+  width: 14px; height: 14px; fill: none;
+  stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round;
+  stroke-dasharray: 20; stroke-dashoffset: 20;
+  animation: lb-draw 0.4s 0.05s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+}
+.lb-second { display: inline-block; animation: lb-second-in 0.5s cubic-bezier(0.2, 0.7, 0.2, 1); }
+.lb-drain { transform-origin: left; animation: lb-drain linear forwards; }
+
 @media (prefers-reduced-motion: reduce) {
+  .lb-press, .lb-seat-pip { transition: none; }
+  .lb-seat-in, .lb-fade-in, .lb-second { animation: none; }
+  .lb-check { stroke-dashoffset: 0; animation: none; }
+  .lb-drain { display: none; }
   .lb-intro, .lb-loader { display: none; }
   .lb-reveal, .lb-tick, .lb-pop { opacity: 1; animation: none; }
   .lb-type { clip-path: none; animation: none; }
