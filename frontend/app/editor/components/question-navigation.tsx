@@ -14,7 +14,7 @@ export default function QuestionNavigation() {
 						onClick={() => setCurrentQuestion(question)}
 						aria-current={selected ? 'true' : undefined}
 						className={`lb-press flex h-10 flex-1 items-center justify-center rounded-md font-medium ${
-							selected ? 'bg-raised text-ink' : 'text-muted hover:text-ink'
+							selected ? 'bg-raised font-bold text-primary' : 'text-muted hover:text-ink'
 						}`}
 					>
 						{index + 1}

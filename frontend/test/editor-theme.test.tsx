@@ -9,6 +9,7 @@
 // The question tabs should match the theme
 //   - The question tabs should not have a colored bottom border
 //   - The tab of the open question should be marked as current
+//   - The number of the open question should use the theme's primary color
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
@@ -86,5 +87,12 @@ describe('question tabs', () => {
 		render(<QuestionNavigation />);
 
 		expect(screen.getByRole('button', { name: '2' }).getAttribute('aria-current')).toBe('true');
+	});
+
+	it('colors the number of the open question with the primary color', () => {
+		editorMocks.useEditor.mockReturnValue({ questions, currentQuestion: questions[1], setCurrentQuestion: vi.fn() });
+		render(<QuestionNavigation />);
+
+		expect(screen.getByRole('button', { name: '2' }).className).toContain('text-primary');
 	});
 });
