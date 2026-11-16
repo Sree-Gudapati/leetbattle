@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import { request } from './setup';
+import { pool } from '../src/db';
 
 // Matches the CODE_SERVICE_URL fallback in src/service.ts (CodeService's own
 // default port - see service/CodeService/src/index.ts).
@@ -109,6 +110,24 @@ describe('PUT /game', () => {
 			`${CODE_SERVICE_URL}/problem?difficulty=Easy&quantity=6`,
 			`${CODE_SERVICE_URL}/problem?difficulty=Medium&quantity=3`,
 		]);
+	});
+
+	// Covers the errorHandler's `err.status || 500` fallback in src/app.ts, which
+	// every other test skips since createGame's own validation errors are always
+	// thrown as an HttpError (which does carry a .status). A raw DB failure here
+	// has no .status, so it should fall through to next(err) and surface as 500.
+	describe('when the database fails mid-insert', () => {
+		afterEach(() => {
+			vi.restoreAllMocks();
+		});
+
+		it('responds 500 instead of the validation-error 400', async () => {
+			vi.spyOn(pool, 'query').mockRejectedValueOnce(new Error('connection lost'));
+			const res = await request
+				.put('/game')
+				.send({ players: sixReadyPlayers() });
+			expect(res.status).toBe(500);
+		});
 	});
 });
 
