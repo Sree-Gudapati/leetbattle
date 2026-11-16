@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { pool } from './db';
 
 const GAME_DURATION_MS = 20 * 60 * 1000;
+const CODE_SERVICE_URL = process.env.CODE_SERVICE_URL ?? 'http://localhost:4001';
 
 const readyPlayerSchema = z.object({
 	userId: z.uuid(),
@@ -47,6 +48,19 @@ class HttpError extends Error {
 	}
 }
 
+// The shared problem pool for a new match: six Easy + three Medium questions
+// from CodeService's GET /problem?difficulty=&quantity= endpoint. Both teams
+// draw from the same nine (see game_problems in sql/schema.sql).
+async function fetchProblemPool(): Promise<string[]> {
+	const [easyRes, mediumRes] = await Promise.all([
+		fetch(`${CODE_SERVICE_URL}/problem?difficulty=Easy&quantity=6`),
+		fetch(`${CODE_SERVICE_URL}/problem?difficulty=Medium&quantity=3`),
+	]);
+	const easyProblems = await easyRes.json() as { task_id: string }[];
+	const mediumProblems = await mediumRes.json() as { task_id: string }[];
+	return [...easyProblems, ...mediumProblems].map((problem) => problem.task_id);
+}
+
 export function getRoot(_req: Request, res: Response) {
 	res.json({
 		service: 'game-service',
@@ -86,6 +100,14 @@ export async function createGame(req: Request, res: Response, next: NextFunction
 			);
 		}
 
+		const problemPool = await fetchProblemPool();
+		for (const taskId of problemPool) {
+			await pool.query(
+				'INSERT INTO game_problems (game_id, task_id) VALUES ($1, $2)',
+				[gameId, taskId],
+			);
+		}
+
 		const endTimer = setTimeout(() => {
 			games.delete(gameId);
 			void pool.query('UPDATE game SET ended_at = NOW() WHERE game_id = $1', [gameId]).catch((err: unknown) => {
@@ -100,7 +122,7 @@ export async function createGame(req: Request, res: Response, next: NextFunction
 			endTimer,
 			scores: { a: 0, b: 0 },
 			players: new Map(players.map((player) => [player.userId, { ...player, connected: false }])),
-			problemPool: [],
+			problemPool,
 			selections: new Map(),
 		});
 
