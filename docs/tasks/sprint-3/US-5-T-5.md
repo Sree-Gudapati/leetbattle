@@ -9,7 +9,7 @@ estimate_hours: 1
 # Keep the frontend CI check green
 
 ## Description
-Serves US-5 (UI/UX). The frontend check requires 80% coverage for lines, statements, functions and branches (`frontend/vitest.config.ts`). Branch coverage dropped under 80% once the lobby page was counted. This task brought it back to about 83%. Issue #79, finished in PR #63.
+Serves US-5 (UI/UX). The frontend check requires 80% coverage for lines, statements, functions and branches (`frontend/vitest.config.mts`). Branch coverage dropped under 80% once the lobby page was counted. This task brought it back to about 83%. Issue #79, finished in PR #63.
 
 ## Specs
 - The loader and navigation tests no longer load the lobby page; the lobby page is covered by its own tests.
