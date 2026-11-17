@@ -1,9 +1,11 @@
-// Tests for the team chat panel on the match screen (US-3-T-1).
+// Tests for the team chat panel on the match screen (US-3-T-1) and for sending
+// and receiving its messages over the game socket (US-3-T-2).
 // Pseudocode these tests were written from: test/chat-test-pseudo.md
 //
 // Nothing here talks to a backend: the comments are mocked data handed to the
-// chat provider, the signed-in player is a fake, and the one test that renders
-// the whole match screen serves its problems from a stubbed fetch.
+// chat provider, the signed-in player is a fake, the one test that renders
+// the whole match screen serves its problems from a stubbed fetch, and the
+// US-3-T-2 tests hand the provider a fake game socket.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -28,6 +30,7 @@ import EditorPage from '../app/editor/page';
 import TeamChat from '../app/editor/components/team-chat';
 import { ChatProvider } from '../app/editor/chat-context';
 import type { ChatMessage } from '../app/editor/chat-context';
+import type { Socket } from 'socket.io-client';
 
 // Mocked team comments from two teammates.
 const teamComments: ChatMessage[] = [
@@ -52,6 +55,41 @@ function messageBox(): HTMLInputElement {
 // The button that posts the comment.
 function sendButton(): HTMLButtonElement {
 	return screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement;
+}
+
+type Handler = (_payload: unknown) => void;
+
+// A stand-in for the game's socket.io-client Socket (same idea as
+// game-socket.test.tsx): `on` records handlers, `fire` invokes them the way
+// the real socket would on a server event, and `emit` records what was sent.
+function fakeSocket() {
+	const handlers = new Map<string, Handler[]>();
+	const socket = {
+		on: vi.fn((event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+			return socket;
+		}),
+		off: vi.fn((event: string, handler: Handler) => {
+			handlers.set(event, (handlers.get(event) ?? []).filter((entry) => entry !== handler));
+			return socket;
+		}),
+		emit: vi.fn(),
+	};
+	const fire = (event: string, payload?: unknown) => {
+		for (const handler of handlers.get(event) ?? []) handler(payload);
+	};
+	return { socket, fire };
+}
+
+// Renders the chat panel connected to a fake game socket, with no comments yet.
+function renderChatWithSocket() {
+	const fake = fakeSocket();
+	render(
+		<ChatProvider socket={fake.socket as unknown as Socket}>
+			<TeamChat />
+		</ChatProvider>,
+	);
+	return fake;
 }
 
 beforeEach(() => {
@@ -170,5 +208,20 @@ describe('posting a team comment', () => {
 
 		// Spaces alone are not a comment.
 		expect(sendButton().disabled).toBe(true);
+	});
+});
+
+// US-3-T-2: team chat messages over the game socket (all tests use a mocked socket, no backend)
+
+describe('sending comments over the game socket', () => {
+	it('US-3-T-2 emits chat:send with the message text when the player sends a comment', async () => {
+		const user = userEvent.setup();
+		const fake = renderChatWithSocket();
+
+		await user.type(messageBox(), 'Question 1 is done');
+		await user.click(sendButton());
+
+		// The event name and its { text } payload (anything after that is not checked here).
+		expect(fake.socket.emit.mock.calls[0].slice(0, 2)).toEqual(['chat:send', { text: 'Question 1 is done' }]);
 	});
 });
