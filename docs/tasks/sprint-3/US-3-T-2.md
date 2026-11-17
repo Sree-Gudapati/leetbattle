@@ -37,7 +37,7 @@ Serves US-3 Communication. The team chat panel currently keeps messages only in 
 3. Players from the opposing team do not recieve `chat:message` 
 4. A `chat:send` with White-space only text is rejected and it is not saved to the `team_messages` db and no `chat:message` is sent.
 5. A `chat:send` message with text longer than 500 characters is rejected and is not saved to the `team_messages` db and no `chat:message` is sent.
-6. A valid message saves game_id, team, user_id, text, sent_at to the `team_messages` db. 
+6. A valid message saves game_id, team, user_id, text and sent_at to the `team_messages` db. 
 7. In the frontend, calling `send` emits `chat:send` with the trimmed text.
 8. In the frontend an incoming `chat:message` appears in `messages` once. 
 9. Messages are rejected after the game ends and are not saved to the DB and no `chat:message` is sent.
