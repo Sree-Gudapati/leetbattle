@@ -14,12 +14,15 @@ const DEFAULT_RECONNECT_GRACE_MS = 30_000;
 // How long a team must wait after a submission is graded before submitting
 // again, so teams can't spam CodeService's grading functions.
 const DEFAULT_SUBMIT_COOLDOWN_MS = 5_000;
+// How long players have to ban before play starts with the bans made so far.
+const DEFAULT_BAN_WINDOW_MS = 30_000;
 
 interface ServerOptions {
 	origins?: string[];
 	joinWaitMs?: number;
 	reconnectGraceMs?: number;
 	submitCooldownMs?: number;
+	banWindowMs?: number;
 }
 
 // What the auth middleware attaches to every accepted socket.
@@ -36,6 +39,14 @@ interface Submission {
 	questionId?: unknown;
 	code?: unknown;
 }
+
+// What a player sends on `game:ban`.
+interface Ban {
+	questionId?: unknown;
+}
+
+// The answer to `game:ban`.
+type BanResponse = { ok: true } | { error: 'not-banning' | 'unknown-problem' | 'already-banned' | 'problem-banned' };
 
 // The answer to `game:submit`: CodeService's grading, or why it was refused.
 type SubmitResponse = Grading | { error: 'not-playing' | 'unknown-problem' | 'team-busy' | 'cooldown' | 'grading-failed' };
@@ -62,9 +73,12 @@ export function resultOnTime({ a, b }: Record<TeamId, number>): GameResult {
 // the lobby sent, so a client can't choose to listen to the other team.
 //
 // Lifecycle (all server-side timers, never trusted to a client):
-//   waiting -> playing  once every player connects, or the join wait runs out
-//   playing -> ended    when a whole team has left, a team forfeits, a team
-//                       solves every problem, or time runs out
+//   waiting -> banning  once every player connects, or the join wait runs out
+//   banning -> playing  once every player still in the game has banned one
+//                       problem, or the ban window runs out
+//   banning/playing -> ended
+//                       when a whole team has left; also (playing only) when a
+//                       team forfeits, a team solves every problem, or time runs out
 export function createGameServer(app: Express, options: ServerOptions = {}) {
 	const origins = options.origins ?? (process.env.FRONTEND_URL ?? 'http://localhost:3000')
 		.split(',')
@@ -73,6 +87,7 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 	const joinWaitMs = options.joinWaitMs ?? DEFAULT_JOIN_WAIT_MS;
 	const reconnectGraceMs = options.reconnectGraceMs ?? DEFAULT_RECONNECT_GRACE_MS;
 	const submitCooldownMs = options.submitCooldownMs ?? DEFAULT_SUBMIT_COOLDOWN_MS;
+	const banWindowMs = options.banWindowMs ?? DEFAULT_BAN_WINDOW_MS;
 	const httpServer = createServer(app);
 	const io = new Server(httpServer, { cors: { origin: origins, methods: ['GET', 'POST'] } });
 	// The live socket id for each player, so a stale connection (e.g. the tab
@@ -86,6 +101,7 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 
 	const clearTimers = (game: GameState) => {
 		clearTimeout(game.timers.join);
+		clearTimeout(game.timers.ban);
 		clearTimeout(game.timers.end);
 		for (const timer of game.timers.leave.values()) clearTimeout(timer);
 		game.timers.leave.clear();
@@ -126,30 +142,64 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 				void endGame(game, { winner: otherTeam(player.team), reason: 'disconnect' });
 				return;
 			}
+			// A player who left no longer holds up the bans.
+			if (game.phase === 'banning' && everyoneBanned(game)) {
+				void startPlaying(game);
+				return;
+			}
 			broadcastState(game);
 		}, reconnectGraceMs);
 		timer.unref?.();
 		game.timers.leave.set(player.userId, timer);
 	};
 
-	// Starts the clock. Anyone who hasn't connected yet is treated as having
-	// just dropped, so they get the same reconnect window.
-	const startPlaying = (game: GameState) => {
+	// Whether every player still in the game (not left) has made their ban.
+	const everyoneBanned = (game: GameState) => [...game.players.values()]
+		.every((player) => player.left || game.bans.has(player.userId));
+
+	// Starts the bans. Anyone who hasn't connected yet is treated as having
+	// just dropped, so they get the usual reconnect window.
+	const startBanning = (game: GameState) => {
 		if (game.phase !== 'waiting') return;
 		clearTimeout(game.timers.join);
-		game.phase = 'playing';
-		game.startedAt = Date.now();
-		game.timers.end = setTimeout(() => endOnTime(game), GAME_DURATION_MS);
-		game.timers.end.unref?.();
+		game.phase = 'banning';
+		game.banEndsAt = Date.now() + banWindowMs;
+		game.timers.ban = setTimeout(() => void startPlaying(game), banWindowMs);
+		game.timers.ban.unref?.();
 		for (const player of game.players.values()) {
 			if (!player.connected) scheduleLeave(game, player);
 		}
 		broadcastState(game);
 	};
 
+	// Starts the clock on the problems the bans left. The banned problems are
+	// removed from game_problems before anyone is told play has started, so the
+	// saved pool always matches the one being played.
+	const startPlaying = async (game: GameState) => {
+		if (game.phase !== 'banning') return;
+		clearTimeout(game.timers.ban);
+		const banned = new Set(game.bans.values());
+		const removed = game.problemPool.filter((problem) => banned.has(problem.questionId));
+		game.problemPool = game.problemPool.filter((problem) => !banned.has(problem.questionId));
+		game.phase = 'playing';
+		game.banEndsAt = null;
+		game.startedAt = Date.now();
+		game.timers.end = setTimeout(() => endOnTime(game), GAME_DURATION_MS);
+		game.timers.end.unref?.();
+		try {
+			await pool.query(
+				'DELETE FROM game_problems WHERE game_id = $1 AND task_id = ANY($2::text[])',
+				[game.gameId, removed.map((problem) => problem.taskId)],
+			);
+		} catch (err) {
+			console.error('[game-service] failed to save the bans', err);
+		}
+		if (game.phase === 'playing') broadcastState(game);
+	};
+
 	const stopListening = onGameCreated((game) => {
 		liveGames.add(game);
-		game.timers.join = setTimeout(() => startPlaying(game), joinWaitMs);
+		game.timers.join = setTimeout(() => startBanning(game), joinWaitMs);
 		game.timers.join.unref?.();
 	});
 
@@ -178,10 +228,29 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 		clearTimeout(game.timers.leave.get(user.id));
 		game.timers.leave.delete(user.id);
 		if (game.phase === 'waiting' && [...game.players.values()].every((entry) => entry.connected)) {
-			startPlaying(game);
+			startBanning(game);
 		} else {
 			broadcastState(game);
 		}
+
+		// Each player bans one problem from the pool. Play starts once every
+		// player still in the game has banned (or the ban window runs out).
+		socket.on('game:ban', (request: Ban, ack?: (_response: BanResponse) => void) => {
+			const reply = typeof ack === 'function' ? ack : () => undefined;
+			if (game.phase !== 'banning') return reply({ error: 'not-banning' });
+			const problem = game.problemPool.find((entry) => entry.questionId === request?.questionId);
+			if (!problem) return reply({ error: 'unknown-problem' });
+			if (game.bans.has(user.id)) return reply({ error: 'already-banned' });
+			if ([...game.bans.values()].includes(problem.questionId)) return reply({ error: 'problem-banned' });
+
+			game.bans.set(user.id, problem.questionId);
+			reply({ ok: true });
+			if (everyoneBanned(game)) {
+				void startPlaying(game);
+				return;
+			}
+			broadcastState(game);
+		});
 
 		// A team forfeits once every teammate still in the game has voted to.
 		socket.on('game:forfeit', () => {
@@ -236,7 +305,7 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 			socketsByPlayer.delete(playerKey);
 			if (game.phase === 'ended') return;
 			player.connected = false;
-			if (game.phase === 'playing') scheduleLeave(game, player);
+			if (game.phase === 'banning' || game.phase === 'playing') scheduleLeave(game, player);
 			broadcastState(game);
 		});
 	});

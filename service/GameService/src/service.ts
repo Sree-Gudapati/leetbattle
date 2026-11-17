@@ -24,11 +24,13 @@ export type TeamId = 'a' | 'b';
 
 // One problem in a match's pool. game_problems saves only the task_id; the
 // question_id is what CodeService's GET /problem/:questionId looks it up by,
-// so the game page can load the full problem from the pool alone.
+// so the game page can load the full problem from the pool alone. topics are
+// CodeService's tags: all the ban screen shows of a problem.
 export interface PoolProblem {
 	taskId: string;
 	questionId: number;
 	difficulty: string;
+	topics: string[];
 }
 
 export interface GamePlayerState {
@@ -40,9 +42,10 @@ export interface GamePlayerState {
 }
 
 // waiting: created, waiting for players to connect (the clock hasn't started)
-// playing: the 20-minute clock is running
+// banning: every player bans one problem from the pool (the clock hasn't started)
+// playing: the 20-minute clock is running on the problems the bans left
 // ended:   decided; about to be torn down
-export type GamePhase = 'waiting' | 'playing' | 'ended';
+export type GamePhase = 'waiting' | 'banning' | 'playing' | 'ended';
 
 export interface GameState {
 	gameId: string;
@@ -50,7 +53,11 @@ export interface GameState {
 	startedAt: number | null; // Date.now() when play began; used to compute time remaining
 	scores: Record<TeamId, number>; // live counterpart of game.t1_score / t2_score
 	players: Map<string, GamePlayerState>; // keyed by userId
-	problemPool: PoolProblem[]; // problems assigned to this game (task_ids saved in game_problems)
+	// Problems assigned to this game (task_ids saved in game_problems). All nine
+	// until play starts, then only the ones the bans left.
+	problemPool: PoolProblem[];
+	bans: Map<string, number>; // userId -> questionId that player banned
+	banEndsAt: number | null; // Date.now() when the ban window runs out; null outside the ban phase
 	selections: Map<string, string>; // userId -> task_id currently being worked (player_selections)
 	forfeitVotes: Record<TeamId, Set<string>>; // userIds on each team who chose to forfeit
 	solved: Record<TeamId, Set<string>>; // task_ids each team has had accepted
@@ -61,6 +68,7 @@ export interface GameState {
 	// Server-side timers driving the match - all owned by src/server.ts.
 	timers: {
 		join?: NodeJS.Timeout; // ends the join wait
+		ban?: NodeJS.Timeout; // ends the ban window
 		end?: NodeJS.Timeout; // ends the match when the clock runs out
 		leave: Map<string, NodeJS.Timeout>; // userId -> ends that player's reconnect window
 	};
@@ -85,17 +93,28 @@ export function onGameCreated(listener: (_game: GameState) => void): () => void 
 	return () => createdListeners.delete(listener);
 }
 
+// Who banned the problem with `questionId`, as the ban screen shows it, or null.
+function bannedBy(game: GameState, questionId: number) {
+	for (const [userId, banned] of game.bans) {
+		const player = game.players.get(userId);
+		if (banned === questionId && player) return { userId, displayName: player.displayName, team: player.team };
+	}
+	return null;
+}
+
+const secondsUntil = (time: number) => Math.max(0, Math.ceil((time - Date.now()) / 1000));
+
 // The wire form of a GameState for the `game:state` socket event: everything
 // a client needs to render the match, minus server-only timers and who voted.
 export function serializeGame(game: GameState) {
-	const elapsed = game.startedAt === null ? 0 : Date.now() - game.startedAt;
 	return {
 		gameId: game.gameId,
 		phase: game.phase,
 		startedAt: game.startedAt,
-		secondsRemaining: Math.max(0, Math.ceil((GAME_DURATION_MS - elapsed) / 1000)),
+		secondsRemaining: secondsUntil((game.startedAt ?? Date.now()) + GAME_DURATION_MS),
+		banSecondsRemaining: game.banEndsAt === null ? 0 : secondsUntil(game.banEndsAt),
 		scores: game.scores,
-		problemPool: game.problemPool,
+		problemPool: game.problemPool.map((problem) => ({ ...problem, bannedBy: bannedBy(game, problem.questionId) })),
 		players: [...game.players.values()],
 		forfeitVotes: { a: game.forfeitVotes.a.size, b: game.forfeitVotes.b.size },
 		solved: { a: [...game.solved.a], b: [...game.solved.b] },
@@ -130,12 +149,13 @@ async function fetchProblemPool(): Promise<PoolProblem[]> {
 	}
 	if (responses.some((response) => !response.ok)) throw unavailable;
 	const [easyProblems, mediumProblems] = await Promise.all(
-		responses.map((response) => response.json() as Promise<{ task_id: string; question_id: number; difficulty: string }[]>),
+		responses.map((response) => response.json() as Promise<{ task_id: string; question_id: number; difficulty: string; tags?: string[] }[]>),
 	);
 	return [...easyProblems, ...mediumProblems].map((problem) => ({
 		taskId: problem.task_id,
 		questionId: problem.question_id,
 		difficulty: problem.difficulty,
+		topics: problem.tags ?? [],
 	}));
 }
 
@@ -202,6 +222,8 @@ export async function createGame(req: Request, res: Response, next: NextFunction
 			scores: { a: 0, b: 0 },
 			players: new Map(players.map((player) => [player.userId, { ...player, connected: false, left: false }])),
 			problemPool,
+			bans: new Map(),
+			banEndsAt: null,
 			selections: new Map(),
 			forfeitVotes: { a: new Set(), b: new Set() },
 			solved: { a: new Set(), b: new Set() },
