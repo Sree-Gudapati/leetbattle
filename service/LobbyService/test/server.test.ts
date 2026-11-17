@@ -6,6 +6,8 @@ import type { Socket } from 'socket.io-client';
 import { createLobbyService } from '../src/server';
 import type { LobbySnapshot } from '../src/lobby-state';
 
+const GAME_SERVICE_URL = 'http://localhost:4004';
+
 const SECRET = 'local-test-secret-'.padEnd(64, 'x');
 let connectedClients: Socket[] = [];
 let lobbyService: ReturnType<typeof createLobbyService>;
@@ -125,7 +127,7 @@ async function startLobbyService(options: Parameters<typeof createLobbyService>[
 beforeEach(async () => {
 	connectedClients = [];
 	process.env.SECRET = SECRET;
-	gameServiceFetch = vi.fn(() => Promise.resolve(gameServiceResponse(201, { gameId: 'game-1' })));
+	gameServiceFetch = vi.fn(() => Promise.resolve(gameServiceResponse(201, { gameId: 'stub-game-id' })));
 	vi.stubGlobal('fetch', gameServiceFetch);
 	await startLobbyService();
 });
@@ -175,6 +177,10 @@ describe('LobbyService socket lifecycle', () => {
 		const fullTeamError = nextEvent<{ code: string }>(clients[3], 'lobby:error');
 		clients[3].emit('lobby:join-team', 'a');
 		expect(await fullTeamError).toMatchObject({ code: 'team-full' });
+
+		// GameService never answers in this test, so the lobby stays exactly as it is
+		// the moment ready-for-match goes out (once it answers, the lobby sockets close).
+		gameServiceFetch.mockReturnValue(new Promise(() => undefined));
 
 		// An authenticated client can observe the lobby without taking one of its seats.
 		const observer = await connectUser('teams-observer');
@@ -310,6 +316,59 @@ describe('LobbyService socket lifecycle', () => {
 		player.disconnect();
 		expect((await afterExpiry).playerCount).toBe(0);
 	});
+});
+
+async function readyUpAll(clients: Socket[]): Promise<void> {
+	for (const [index, client] of clients.entries()) {
+		await emitAndWaitForState(client, 'lobby:set-ready', true, (state) => state.readyCount === index + 1);
+	}
+}
+
+// GameService is stubbed by the top-level beforeEach (gameServiceFetch),
+// since every suite that completes a countdown now reaches it.
+describe('Lobbyservice makes request to GameService', () => {
+	it('makes a request with correct body', async () => {
+		const clients = await createFullLobby('request');
+
+		const readinessEvents = Promise.all(clients.map((client) => nextEvent(client, 'lobby:ready-for-match', 7_000)));
+		await readyUpAll(clients);
+		await readinessEvents;
+
+		expect(gameServiceFetch).toHaveBeenCalledWith(
+			`${GAME_SERVICE_URL}/game`,
+			expect.objectContaining({
+				method: 'PUT',
+				body: JSON.stringify({
+					players: Array.from({ length: 6 }, (_, index) => ({
+						userId: `request-${index}`,
+						displayName: `Player request-${index}`,
+						team: index < 3 ? 'a' : 'b',
+					})),
+				}),
+			}),
+		);
+	}, 10_000);
+
+	it('emits the new games id over the websocket once GameService responds', async () => {
+		const clients = await createFullLobby('gameid');
+
+		const gameStarted = nextEvent<{ gameId: string }>(clients[0], 'lobby:game-started', 7_000);
+		await readyUpAll(clients);
+
+		expect((await gameStarted).gameId).toBe('stub-game-id');
+	}, 10_000);
+
+	it('closes each player\'s socket once the game starts', async () => {
+		const clients = await createFullLobby('close');
+
+		const disconnections = Promise.all(clients.map((client) => new Promise<void>((resolve) => {
+			client.once('disconnect', () => resolve());
+		})));
+		await readyUpAll(clients);
+		await disconnections;
+
+		expect(clients.every((client) => client.connected)).toBe(false);
+	}, 10_000);
 });
 
 function createUnauthenticatedClient(): Socket {
@@ -467,9 +526,9 @@ describe('team size', () => {
 });
 
 // US-6-T-2: Lobby should start a game on GameService when the countdown completes
-//  - When the countdown completes with all six players ready, the lobby should call PUT /game on GameService exactly once
-//  - The request body should contain the lobby ID and all six players with their teams
-//  - The "lobby:ready-for-match" event should include the gameId that GameService returned
+//  - When the countdown completes with all six players ready, the lobby should call GameService exactly once
+//    (the request itself, the gameId event and closing the lobby sockets are covered by
+//    'Lobbyservice makes request to GameService' above)
 // Lobby should not start a game when a player backs out
 //  - If a player becomes unready during the countdown, GameService should not be called
 // Lobby should recover when GameService cannot start the game
@@ -478,58 +537,29 @@ describe('team size', () => {
 //  - When the game fails to start, every player's ready state should be reset
 //  - After a failed start, players can ready up again and the lobby should call GameService a second time
 describe('US-6-T-2 game start', () => {
-	const GAME_SERVICE_URL = 'http://game-service.test';
 	// Short enough to keep each test quick, long enough that a test can register
 	// its listeners (or unready a player) before the countdown fires.
 	const COUNTDOWN_MS = 300;
 
 	beforeEach(async () => {
-		await startLobbyService({ matchCountdownMs: COUNTDOWN_MS, gameServiceUrl: GAME_SERVICE_URL });
+		await startLobbyService({ matchCountdownMs: COUNTDOWN_MS });
 	});
 
 	// Fills both teams and readies all six players, which starts the countdown.
-	async function readyUpAll(prefix: string): Promise<Socket[]> {
+	async function startCountdown(prefix: string): Promise<Socket[]> {
 		const clients = await createFullLobby(prefix);
-		for (const client of clients) await emitAndWaitForState(client, 'lobby:set-ready', true);
+		await readyUpAll(clients);
 		return clients;
 	}
 
 	it('calls GameService exactly once when the countdown completes', async () => {
-		const clients = await readyUpAll('US-6-T-2-once');
-		await nextEvent(clients[0], 'lobby:ready-for-match');
+		const clients = await startCountdown('US-6-T-2-once');
+		await nextEvent(clients[0], 'lobby:game-started');
 		expect(gameServiceFetch).toHaveBeenCalledTimes(1);
 	});
 
-	it('creates the game with PUT /game on GameService', async () => {
-		const clients = await readyUpAll('US-6-T-2-route');
-		await nextEvent(clients[0], 'lobby:ready-for-match');
-		const [url, init] = gameServiceFetch.mock.calls[0] as [string, RequestInit];
-		expect({ url, method: init.method }).toEqual({ url: `${GAME_SERVICE_URL}/game`, method: 'PUT' });
-	});
-
-	it('sends the lobby id and all six players with their teams', async () => {
-		const clients = await readyUpAll('US-6-T-2-body');
-		await nextEvent(clients[0], 'lobby:ready-for-match');
-		const [, init] = gameServiceFetch.mock.calls[0] as [string, RequestInit];
-		// Players joined in index order, so the roster is sent in that order too.
-		expect(JSON.parse(String(init.body))).toEqual({
-			lobbyId: 'main',
-			players: [0, 1, 2, 3, 4, 5].map((index) => ({
-				userId: `US-6-T-2-body-${index}`,
-				displayName: `Player US-6-T-2-body-${index}`,
-				team: index < 3 ? 'a' : 'b',
-			})),
-		});
-	});
-
-	it('includes the new gameId in lobby:ready-for-match', async () => {
-		const clients = await readyUpAll('US-6-T-2-game-id');
-		const event = await nextEvent<{ gameId: string }>(clients[0], 'lobby:ready-for-match');
-		expect(event.gameId).toBe('game-1');
-	});
-
 	it('does not call GameService when a player unreadies during the countdown', async () => {
-		const clients = await readyUpAll('US-6-T-2-unready');
+		const clients = await startCountdown('US-6-T-2-unready');
 		await emitAndWaitForState(clients[0], 'lobby:set-ready', false);
 		await expectNoEvent(clients[0], 'lobby:ready-for-match', COUNTDOWN_MS * 2);
 		expect(gameServiceFetch).not.toHaveBeenCalled();
@@ -537,7 +567,7 @@ describe('US-6-T-2 game start', () => {
 
 	it('reports game-start-failed to the lobby when GameService responds with an error', async () => {
 		gameServiceFetch.mockResolvedValue(gameServiceResponse(500, { message: 'database unavailable' }));
-		const clients = await readyUpAll('US-6-T-2-error');
+		const clients = await startCountdown('US-6-T-2-error');
 		// The observer never readied up, so the error must reach the whole room, not just one socket.
 		const error = await nextEvent<{ code: string }>(clients[5], 'lobby:error');
 		expect(error.code).toBe('game-start-failed');
@@ -545,24 +575,24 @@ describe('US-6-T-2 game start', () => {
 
 	it('reports game-start-failed to the lobby when GameService is unreachable', async () => {
 		gameServiceFetch.mockRejectedValue(new Error('connect ECONNREFUSED'));
-		const clients = await readyUpAll('US-6-T-2-unreachable');
+		const clients = await startCountdown('US-6-T-2-unreachable');
 		const error = await nextEvent<{ code: string }>(clients[0], 'lobby:error');
 		expect(error.code).toBe('game-start-failed');
 	});
 
 	it('resets every player\'s ready state when the game fails to start', async () => {
 		gameServiceFetch.mockRejectedValue(new Error('connect ECONNREFUSED'));
-		const clients = await readyUpAll('US-6-T-2-reset');
+		const clients = await startCountdown('US-6-T-2-reset');
 		const state = await nextLobbyState(clients[0], (lobby) => lobby.readyCount === 0);
 		expect(state.players.every((player) => !player.ready)).toBe(true);
 	});
 
 	it('lets players ready up again and calls GameService a second time after a failed start', async () => {
 		gameServiceFetch.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
-		const clients = await readyUpAll('US-6-T-2-retry');
+		const clients = await startCountdown('US-6-T-2-retry');
 		await nextLobbyState(clients[0], (lobby) => lobby.readyCount === 0);
 		for (const client of clients) await emitAndWaitForState(client, 'lobby:set-ready', true);
-		await nextEvent(clients[0], 'lobby:ready-for-match');
+		await nextEvent(clients[0], 'lobby:game-started');
 		expect(gameServiceFetch).toHaveBeenCalledTimes(2);
 	});
 });

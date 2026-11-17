@@ -20,7 +20,6 @@ export interface LobbySnapshot {
 
 export interface LobbyReadiness {
 	lobbyId: 'main';
-	gameId: string;
 	players: LobbyPlayer[];
 }
 

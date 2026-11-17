@@ -3,13 +3,14 @@ import { Server } from 'socket.io';
 import type { Socket } from 'socket.io';
 import { authenticateToken } from './auth';
 import { LobbyError, LobbyState } from './lobby-state';
-import type { LobbyStore } from './lobby-state';
+import type { LobbyPlayer, LobbyStore } from './lobby-state';
 import type { TeamId } from './lobby-state';
 
 const LOBBY_ROOM = 'lobby:main';
 const DEFAULT_MATCH_COUNTDOWN_MS = 5_000;
+const GAME_SERVICE_URL = process.env.GAME_SERVICE_URL ?? 'http://localhost:4004';
 // How long to wait for GameService to create the match before giving up.
-const DEFAULT_GAME_START_TIMEOUT_MS = 5_000;
+const GAME_START_TIMEOUT_MS = 5_000;
 
 interface UserData {
 	id: string;
@@ -22,8 +23,6 @@ interface ServerOptions {
 	origins?: string[];
 	store?: LobbyStore;
 	matchCountdownMs?: number;
-	gameServiceUrl?: string;
-	gameStartTimeoutMs?: number;
 }
 
 export function createLobbyService(options: ServerOptions = {}) {
@@ -32,8 +31,6 @@ export function createLobbyService(options: ServerOptions = {}) {
 		.map((origin) => origin.trim())
 		.filter(Boolean);
 	const matchCountdownMs = options.matchCountdownMs ?? DEFAULT_MATCH_COUNTDOWN_MS;
-	const gameServiceUrl = options.gameServiceUrl ?? process.env.GAME_SERVICE_URL ?? 'http://localhost:4004';
-	const gameStartTimeoutMs = options.gameStartTimeoutMs ?? DEFAULT_GAME_START_TIMEOUT_MS;
 	const httpServer = createServer((request, response) => {
 		if (request.url === '/health') {
 			response.writeHead(200, { 'Content-Type': 'application/json' });
@@ -69,30 +66,33 @@ export function createLobbyService(options: ServerOptions = {}) {
 		countdownTimeout = undefined;
 		countdownStartedAt = null;
 	};
-	// Asks GameService to create the match for the six ready players, then
-	// hands the lobby the new gameId. `matchStarted` is already set by the
-	// countdown before this runs, so a second countdown can't fire a duplicate
-	// call; it is cleared again if GameService fails so the lobby can retry.
-	const startGame = async () => {
-		const players = getLobby().snapshot().players;
+	// Asks GameService to create the match for the ready players. On success
+	// every lobby client hears `lobby:game-started` with the gameId, and the
+	// lobby sockets are closed, since players move to GameService's socket.
+	// `matchStarted` is already set by the countdown, so a second countdown
+	// can't fire a duplicate call; it is cleared again if GameService fails,
+	// so the players can ready up and retry.
+	const startGame = async (players: LobbyPlayer[]) => {
 		try {
-			const response = await fetch(`${gameServiceUrl}/game`, {
+			const response = await fetch(`${GAME_SERVICE_URL}/game`, {
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					lobbyId: 'main',
 					players: players.map(({ userId, displayName, team }) => ({ userId, displayName, team })),
 				}),
-				signal: AbortSignal.timeout(gameStartTimeoutMs),
+				signal: AbortSignal.timeout(GAME_START_TIMEOUT_MS),
 			});
 			if (!response.ok) throw new Error(`GameService responded with status ${response.status}`);
 			const { gameId } = await response.json() as { gameId: string };
-			io.to(LOBBY_ROOM).emit('lobby:ready-for-match', { lobbyId: 'main', gameId, players });
+			io.to(LOBBY_ROOM).emit('lobby:game-started', { gameId });
+			io.in(LOBBY_ROOM).disconnectSockets(true);
 		} catch (error) {
 			console.error('[lobby-service] could not start the game', error);
 			matchStarted = false;
-			io.to(LOBBY_ROOM).emit('lobby:error', { code: 'game-start-failed', message: 'The match could not be started. Ready up to try again.' });
+			// Reset first: clients clear their error on every lobby:state, so the
+			// error has to arrive after the state that resets readiness.
 			getLobby().unreadyAll();
+			io.to(LOBBY_ROOM).emit('lobby:error', { code: 'game-start-failed', message: 'The match could not be started. Ready up to try again.' });
 		}
 	};
 	const updateCountdown = () => {
@@ -111,7 +111,12 @@ export function createLobbyService(options: ServerOptions = {}) {
 				countdownStartedAt = null;
 				matchStarted = true;
 				emitLobbyState();
-				void startGame();
+				const readyPlayers = getLobby().snapshot().players;
+				io.to(LOBBY_ROOM).emit('lobby:ready-for-match', {
+					lobbyId: 'main',
+					players: readyPlayers,
+				});
+				void startGame(readyPlayers);
 			}, matchCountdownMs);
 		} else if (!getLobby().snapshot().readyToStart && countdownStartedAt !== null) {
 			clearCountdown();

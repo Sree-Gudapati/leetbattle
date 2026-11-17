@@ -52,7 +52,7 @@ function CountdownDrain({ seconds }: { seconds: number }) {
 
 function LobbyContent() {
 	const { user } = useAuth();
-	const { socket, connected, lobby, error, matchReadiness, connect, clearError } = useLobbySocket();
+	const { socket, connected, lobby, error, matchReadiness, gameStarted, connect, clearError } = useLobbySocket();
 	const router = useRouter();
 	const [nameInput, setNameInput] = useState('');
 	const [nameSaved, setNameSaved] = useState(false);
@@ -62,12 +62,12 @@ function LobbyContent() {
 	}, [connect]);
 
 	const currentPlayer = lobby?.players.find((player) => player.userId === user?.id);
-	// Only the six players move to the match; someone watching the lobby stays put.
-	const joiningMatch = Boolean(matchReadiness && currentPlayer);
+	// Only the match's players move to it; someone watching the lobby stays put.
+	const joiningMatch = Boolean((matchReadiness || gameStarted) && currentPlayer);
 
 	useEffect(() => {
-		if (joiningMatch && matchReadiness) router.push(`/game/${matchReadiness.gameId}`);
-	}, [joiningMatch, matchReadiness, router]);
+		if (joiningMatch && gameStarted) router.push(`/game/${gameStarted.gameId}`);
+	}, [joiningMatch, gameStarted, router]);
 
 	function send(event: string, payload?: unknown) {
 		if (!socket?.connected) return;

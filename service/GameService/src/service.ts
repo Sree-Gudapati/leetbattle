@@ -173,10 +173,7 @@ export async function createGame(req: Request, res: Response, next: NextFunction
 }
 
 // Fetches a single game's current state for the /game/[gameId] page (initial
-// load or reconnect after a dropped socket). Prefers the in-memory GameState
-// when this game_id is still live (cheap, has the authoritative scores/picks);
-// falls back to a DB read (game + players + player_teams + submissions) once
-// ended_at is set and the in-memory state has been torn down.
+// load or reconnect after a dropped socket)
 export async function getGame(req: Request, res: Response, next: NextFunction) {
 	const { id: userId } = req.params;
 	try {
@@ -203,10 +200,12 @@ export async function getGame(req: Request, res: Response, next: NextFunction) {
 // and the `game.t1_score` / `t2_score` cache columns so they can't drift.
 // Also broadcasts the new score to the game's socket.io room.
 // export async function recordSubmission(req: Request, res: Response, next: NextFunction) {}
+// export async function handleSubmission(req: Request, res:Response, next: NextFunction)
 
 // Updates `player_selections` when a player switches which problem they're
 // working on. Upserts the one active row per (game_id, user_id).
 // export async function selectProblem(req: Request, res: Response, next: NextFunction) {}
+// export async function 
 
 // Not an HTTP handler - called by the per-game setTimeout started in
 // createGame (mirrors LobbyService's countdown pattern: server-side timer is

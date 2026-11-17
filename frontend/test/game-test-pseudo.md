@@ -1,11 +1,11 @@
 // US-6-T-2: Lobby should hand players over to the game
- //  - When "lobby:ready-for-match" arrives with a gameId, the lobby should navigate to /game/<gameId>
- //  - While the handover is happening, the status should display "Joining match…"
+ //  - When "lobby:game-started" arrives with a gameId, the lobby should navigate to /game/<gameId>
+ //  - After "lobby:ready-for-match" and before the gameId arrives, the status should display "Joining match…"
 
  // Game page should connect to the game socket for the game in the URL
  //  - On open, the page should connect using the gameId from the URL
  //  - While the socket is not connected, "Joining match…" should be displayed
- //  - Once the game socket connects, the page should disconnect from the lobby socket
+ //  (LobbyService closes the lobby sockets itself once the game starts, so the page doesn't)
 
  // Game page should show connection problems
  //  - When the socket context has an error, its message should appear in an alert

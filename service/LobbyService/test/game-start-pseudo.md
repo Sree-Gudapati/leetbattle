@@ -1,7 +1,7 @@
 // US-6-T-2: Lobby should start a game on GameService when the countdown completes
- //  - When the countdown completes with all six players ready, the lobby should call PUT /game on GameService exactly once
- //  - The request body should contain the lobby ID and all six players with their teams
- //  - The "lobby:ready-for-match" event should include the gameId that GameService returned
+ //  - When the countdown completes with all six players ready, the lobby should call GameService exactly once
+ //    (the PUT /game request, the "lobby:game-started" event with the gameId, and closing the
+ //    lobby sockets are covered by tyler-ham05's "Lobbyservice makes request to GameService" tests)
 
  // Lobby should not start a game when a player backs out
  //  - If a player becomes unready during the countdown, GameService should not be called

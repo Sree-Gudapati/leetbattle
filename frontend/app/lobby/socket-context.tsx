@@ -34,8 +34,12 @@ export interface LobbyError {
 
 export interface LobbyReadiness {
 	lobbyId: 'main';
-	gameId: string;
 	players: LobbyPlayer[];
+}
+
+// Sent once GameService has created the match; the page moves to /game/<gameId>.
+export interface GameStarted {
+	gameId: string;
 }
 
 interface LobbySocketContextValue {
@@ -44,8 +48,8 @@ interface LobbySocketContextValue {
 	lobby: LobbyState | null;
 	error: LobbyError | null;
 	matchReadiness: LobbyReadiness | null;
+	gameStarted: GameStarted | null;
 	connect: () => Socket | null;
-	disconnect: () => void;
 	clearError: () => void;
 }
 
@@ -59,6 +63,7 @@ export function LobbySocketProvider({ children }: { children: ReactNode }) {
 	const [lobby, setLobby] = useState<LobbyState | null>(null);
 	const [error, setError] = useState<LobbyError | null>(null);
 	const [matchReadiness, setMatchReadiness] = useState<LobbyReadiness | null>(null);
+	const [gameStarted, setGameStarted] = useState<GameStarted | null>(null);
 	const socketRef = useRef<{ userId: string; socket: Socket } | null>(null);
 
 	const connect = useCallback(() => {
@@ -86,6 +91,7 @@ export function LobbySocketProvider({ children }: { children: ReactNode }) {
 		});
 		nextSocket.on('lobby:error', (nextError: LobbyError) => setError(nextError));
 		nextSocket.on('lobby:ready-for-match', (readiness: LobbyReadiness) => setMatchReadiness(readiness));
+		nextSocket.on('lobby:game-started', (started: GameStarted) => setGameStarted(started));
 		nextSocket.on('connect_error', (connectError: Error) => {
 			setError({ code: 'connection-error', message: connectError.message === 'unauthorized'
 				? 'Your login session is invalid or expired. Log in again.'
@@ -93,35 +99,36 @@ export function LobbySocketProvider({ children }: { children: ReactNode }) {
 		});
 		nextSocket.on('connect', () => setError(null));
 		nextSocket.on('connect', () => setConnected(true));
-		nextSocket.on('disconnect', () => setConnected(false));
+		nextSocket.on('disconnect', (reason: string) => {
+			setConnected(false);
+			// LobbyService closes the lobby socket once the game starts. Forget it, so
+			// coming back to the lobby after the match opens a fresh connection
+			// instead of reusing the closed one.
+			if (reason === 'io server disconnect' && socketRef.current?.socket === nextSocket) socketRef.current = null;
+		});
 		socketRef.current = { userId: user.id, socket: nextSocket };
 		setSocket(nextSocket);
 		setConnected(false);
+		setGameStarted(null);
 		nextSocket.connect();
 		return nextSocket;
 	}, [user]);
 
-	// Closes the lobby connection and forgets its state. Called on sign-out and
-	// by the game page once the player's game socket is up, since the lobby
-	// connection has done its job by then.
-	const disconnect = useCallback(() => {
+	useEffect(() => {
+		if (user) return;
 		socketRef.current?.socket.disconnect();
 		socketRef.current = null;
 		setSocket(null);
 		setConnected(false);
 		setLobby(null);
-		setMatchReadiness(null);
-	}, []);
-
-	useEffect(() => {
-		if (user) return;
-		disconnect();
 		setError(null);
-	}, [user, disconnect]);
+		setMatchReadiness(null);
+		setGameStarted(null);
+	}, [user]);
 
 	const clearError = useCallback(() => setError(null), []);
 	return (
-		<LobbySocketContext.Provider value={{ socket, connected, lobby, error, matchReadiness, connect, disconnect, clearError }}>
+		<LobbySocketContext.Provider value={{ socket, connected, lobby, error, matchReadiness, gameStarted, connect, clearError }}>
 			{children}
 		</LobbySocketContext.Provider>
 	);
@@ -131,4 +138,8 @@ export function useLobbySocket(): LobbySocketContextValue {
 	const context = useContext(LobbySocketContext);
 	if (!context) throw new Error('useLobbySocket must be used within LobbySocketProvider');
 	return context;
+}
+
+export function useOptionalLobbySocket(): LobbySocketContextValue | null {
+	return useContext(LobbySocketContext);
 }

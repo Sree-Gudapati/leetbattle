@@ -1,7 +1,6 @@
 // US-6-T-2: Game page should connect to the game socket for the game in the URL
 //  - On open, the page should connect using the gameId from the URL
 //  - While the socket is not connected, "Joining match…" should be displayed
-//  - Once the game socket connects, the page should disconnect from the lobby socket
 // Game page should show connection problems
 //  - When the socket context has an error, its message should appear in an alert
 //  - When the connection fails, a link back to the lobby should be shown
@@ -15,14 +14,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import { fakeUser } from './helpers';
 
-// Shared mocks. The game page never talks to GameService or LobbyService in
-// these tests: the auth context, the game socket context and the lobby socket
-// context are all replaced with fakes.
+// Shared mocks. The game page never talks to GameService in these tests: the
+// auth context and the game socket context are replaced with fakes.
 const gameMocks = vi.hoisted(() => ({
 	useGameSocket: vi.fn(),
 	connect: vi.fn(),
 	clearError: vi.fn(),
-	lobbyDisconnect: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -31,9 +28,6 @@ vi.mock('next/navigation', () => ({
 	useParams: () => ({ gameId: 'game-1' }),
 }));
 vi.mock('../app/login/context', () => ({ useAuth: () => ({ user: fakeUser, isLoading: false }) }));
-vi.mock('../app/lobby/socket-context', () => ({
-	useLobbySocket: () => ({ disconnect: gameMocks.lobbyDisconnect }),
-}));
 vi.mock('../app/game/socket-context', () => ({
 	GameSocketProvider: ({ children }: { children: React.ReactNode }) => children,
 	useGameSocket: () => gameMocks.useGameSocket(),
@@ -117,14 +111,6 @@ describe('game page connection', () => {
 		render(<GamePage />);
 
 		expect(screen.getByText('Joining match…')).toBeTruthy();
-	});
-
-	it('US-6-T-2 disconnects from the lobby socket once the game socket connects', () => {
-		configureConnectedGame();
-		render(<GamePage />);
-
-		// The lobby connection is no longer needed once the player is in the match.
-		expect(gameMocks.lobbyDisconnect).toHaveBeenCalled();
 	});
 });
 

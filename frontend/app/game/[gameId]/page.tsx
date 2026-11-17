@@ -7,7 +7,6 @@ import RequireAuth from '../../login/protected';
 import { useAuth } from '../../login/context';
 import HomeTopBar from '../../_home/components/topbar';
 import PageLoader from '../../_shared/page-loader';
-import { useLobbySocket } from '../../lobby/socket-context';
 import type { TeamId } from '../../lobby/socket-context';
 import { titleFromTaskId } from '../../editor/components/question-panel';
 import { GameSocketProvider, useGameSocket } from '../socket-context';
@@ -62,17 +61,11 @@ function GameContent() {
 	const { gameId } = useParams<{ gameId: string }>();
 	const { user } = useAuth();
 	const { connected, game, error, connect } = useGameSocket();
-	const { disconnect: leaveLobby } = useLobbySocket();
 	const joined = connected && game !== null;
 
 	useEffect(() => {
 		connect(gameId);
 	}, [connect, gameId]);
-
-	// The lobby connection has done its job once the player is in the match.
-	useEffect(() => {
-		if (joined) leaveLobby();
-	}, [joined, leaveLobby]);
 
 	return (
 		<div className="flex min-h-screen flex-col bg-page font-sans text-ink">

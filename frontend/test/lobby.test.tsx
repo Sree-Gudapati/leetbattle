@@ -89,6 +89,7 @@ function configureLobby({ userId = 'u1', players = fullTeams, lobby = {}, contex
 		},
 		error: null,
 		matchReadiness: null,
+		gameStarted: null,
 		connect: lobbyMocks.connect,
 		clearError: lobbyMocks.clearError,
 		...context,
@@ -185,16 +186,17 @@ describe('lobby errors and match readiness', () => {
 		expect(screen.getByRole('alert').textContent).toBe('Team 1 is full.');
 	});
 
-	it('US-6-T-2 navigates to the game page once the match is ready', () => {
-		configureLobby({ context: { matchReadiness: { lobbyId: 'main', gameId: 'game-1', players: fullTeams } } });
+	it('US-6-T-2 navigates to the game page once the game has started', () => {
+		configureLobby({ context: { matchReadiness: { lobbyId: 'main', players: fullTeams }, gameStarted: { gameId: 'game-1' } } });
 		render(<LobbyPage />);
 
-		// After lobby:ready-for-match, the page hands the player over to /game/<gameId>.
+		// After lobby:game-started, the page hands the player over to /game/<gameId>.
 		expect(lobbyMocks.push).toHaveBeenCalledWith('/game/game-1');
 	});
 
-	it('US-6-T-2 shows "Joining match…" while handing over to the game', () => {
-		configureLobby({ context: { matchReadiness: { lobbyId: 'main', gameId: 'game-1', players: fullTeams } } });
+	it('US-6-T-2 shows "Joining match…" while GameService creates the game', () => {
+		// The countdown has finished (ready-for-match) but the gameId hasn't arrived yet.
+		configureLobby({ context: { matchReadiness: { lobbyId: 'main', players: fullTeams } } });
 		render(<LobbyPage />);
 
 		expect(screen.getByText('Joining match…')).toBeTruthy();
