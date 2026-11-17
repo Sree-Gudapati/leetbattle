@@ -8,7 +8,8 @@ const DIFFICULTY_STYLES: Record<string, string> = {
 	Hard: 'text-red-600 dark:text-red-400',
 };
 
-function titleFromTaskId(taskId: string): string {
+// "two-sum" -> "Two Sum". Shared with the game page's problem list.
+export function titleFromTaskId(taskId: string): string {
 	return taskId
 		.split('-')
 		.map((word) => word.charAt(0).toUpperCase() + word.slice(1))

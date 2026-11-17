@@ -14,10 +14,13 @@ export interface LobbySnapshot {
 	readyCount: number;
 	canReady: boolean;
 	readyToStart: boolean;
+	teamSize: number;
+	hostId: string | null;
 }
 
 export interface LobbyReadiness {
 	lobbyId: 'main';
+	gameId: string;
 	players: LobbyPlayer[];
 }
 
@@ -27,6 +30,7 @@ export interface LobbyStore {
 	removeMember(_userId: string): Promise<void>;
 	setName(_userId: string, _displayName: string): Promise<void>;
 	setTeam(_userId: string, _team: TeamId): Promise<void>;
+	clearTeam(_userId: string): Promise<void>;
 }
 
 export class LobbyError extends Error {
@@ -44,8 +48,7 @@ interface MemberRecord {
 	disconnectTimer?: ReturnType<typeof setTimeout>;
 }
 
-const LOBBY_CAPACITY = 6;
-const TEAM_CAPACITY = 3;
+export const MAX_TEAM_SIZE = 3;
 const DEFAULT_DISCONNECT_GRACE_MS = 30_000;
 
 export class LobbyState {
@@ -54,6 +57,7 @@ export class LobbyState {
 	private readonly disconnectGraceMs: number;
 	private readonly onChange: () => void;
 	private readonly store?: LobbyStore;
+	private teamSize = MAX_TEAM_SIZE;
 
 	constructor(disconnectGraceMs = DEFAULT_DISCONNECT_GRACE_MS, onChange: () => void = () => undefined, store?: LobbyStore) {
 		this.disconnectGraceMs = disconnectGraceMs;
@@ -107,7 +111,7 @@ export class LobbyState {
 			this.onChange();
 			return this.snapshot();
 		}
-		if (this.members.size >= LOBBY_CAPACITY) {
+		if (this.members.size >= this.capacity()) {
 			throw new LobbyError('lobby-full', 'The lobby is full.');
 		}
 		await this.store?.addMember(userId, displayName);
@@ -141,7 +145,7 @@ export class LobbyState {
 		if (member.player.team === team) return this.snapshot();
 
 		const teamCount = [...this.members.values()].filter((entry) => entry.player.team === team).length;
-		if (teamCount >= TEAM_CAPACITY) {
+		if (teamCount >= this.teamSize) {
 			throw new LobbyError('team-full', `Team ${team === 'a' ? '1' : '2'} is full.`);
 		}
 
@@ -158,11 +162,51 @@ export class LobbyState {
 			throw new LobbyError('not-connected', 'Reconnect to the lobby before readying up.');
 		}
 		if (ready && !this.canReady()) {
-			throw new LobbyError('lobby-not-ready', 'All six players must be connected and on full teams before readying up.');
+			throw new LobbyError('lobby-not-ready', 'Both teams must be full of connected players before readying up.');
 		}
 		member.player.ready = ready;
 		this.onChange();
 		return this.snapshot();
+	}
+
+	// Changes how many players each team holds (1 to 3). Only the host, the
+	// earliest member still in the lobby, may do this. When the size shrinks,
+	// random players are moved off any team that is over it, then random
+	// players (never the host) leave the lobby until it fits the new capacity.
+	async setTeamSize(userId: string, size: unknown): Promise<LobbySnapshot> {
+		this.requireMember(userId);
+		if (userId !== this.hostId()) {
+			throw new LobbyError('not-host', 'Only the host can change the team size.');
+		}
+		if (typeof size !== 'number' || !Number.isInteger(size) || size < 1 || size > MAX_TEAM_SIZE) {
+			throw new LobbyError('invalid-team-size', `Choose between 1 and ${MAX_TEAM_SIZE} players per team.`);
+		}
+		this.teamSize = size;
+		for (const team of ['a', 'b'] as TeamId[]) {
+			const onTeam = shuffle([...this.members.values()].filter(({ player }) => player.team === team));
+			for (const { player } of onTeam.slice(size)) {
+				await this.store?.clearTeam(player.userId);
+				player.team = null;
+			}
+		}
+		const others = [...this.members.values()].filter(({ player }) => player.userId !== userId);
+		// Players without a team go first, so team members are only removed when nothing else fits.
+		const removable = [...shuffle(others.filter(({ player }) => player.team === null)), ...shuffle(others.filter(({ player }) => player.team !== null))];
+		while (this.members.size > this.capacity()) {
+			const next = removable.shift();
+			if (!next) break;
+			await this.removeMember(next.player.userId);
+		}
+		this.resetReadiness();
+		this.onChange();
+		return this.snapshot();
+	}
+
+	// Clears every member's ready flag, e.g. after a failed match start, so the
+	// lobby can count down again from scratch.
+	unreadyAll(): void {
+		this.resetReadiness();
+		this.onChange();
 	}
 
 	snapshot(): LobbySnapshot {
@@ -172,6 +216,8 @@ export class LobbyState {
 			readyCount: [...this.members.values()].filter(({ player }) => player.ready).length,
 			canReady: this.canReady(),
 			readyToStart: this.isReadyToStart(),
+			teamSize: this.teamSize,
+			hostId: this.hostId(),
 		};
 	}
 
@@ -179,6 +225,16 @@ export class LobbyState {
 		for (const member of this.members.values()) {
 			if (member.disconnectTimer) clearTimeout(member.disconnectTimer);
 		}
+	}
+
+	// The host is whoever joined earliest among the players still in the lobby
+	// (Map keeps insertion order), so it passes on automatically when they leave.
+	private hostId(): string | null {
+		return this.members.keys().next().value ?? null;
+	}
+
+	private capacity(): number {
+		return this.teamSize * 2;
 	}
 
 	private requireMember(userId: string): MemberRecord {
@@ -219,9 +275,9 @@ export class LobbyState {
 		const members = [...this.members.values()];
 		const teamACount = members.filter((entry) => entry.player.team === 'a').length;
 		const teamBCount = members.filter((entry) => entry.player.team === 'b').length;
-		return members.length === LOBBY_CAPACITY
-			&& teamACount === TEAM_CAPACITY
-			&& teamBCount === TEAM_CAPACITY
+		return members.length === this.capacity()
+			&& teamACount === this.teamSize
+			&& teamBCount === this.teamSize
 			&& members.every(({ player }) => player.connected);
 	}
 
@@ -229,4 +285,14 @@ export class LobbyState {
 		const members = [...this.members.values()];
 		return this.canReady() && members.every(({ player }) => player.ready);
 	}
+}
+
+// Fisher-Yates: returns a copy of `items` in random order.
+function shuffle<T>(items: T[]): T[] {
+	const copy = [...items];
+	for (let i = copy.length - 1; i > 0; i--) {
+		const j = Math.floor(Math.random() * (i + 1));
+		[copy[i], copy[j]] = [copy[j], copy[i]];
+	}
+	return copy;
 }

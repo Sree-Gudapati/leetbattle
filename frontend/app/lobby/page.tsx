@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useState } from 'react';
 import type { CSSProperties, FormEvent } from 'react';
+import { useRouter } from 'next/navigation';
 import RequireAuth from '../login/protected';
 import { useAuth } from '../login/context';
 import HomeTopBar from '../_home/components/topbar';
@@ -14,21 +15,21 @@ const TEAMS: { id: TeamId; name: string; nameColor: string; fill: string; check:
 	{ id: 'b', name: 'Team 2', nameColor: 'text-secondary', fill: 'bg-secondary text-page', check: 'stroke-secondary' },
 ];
 
-const SEATS = 6;
-const TEAM_SIZE = 3;
+const TEAM_SIZES = [1, 2, 3];
+const TEAM_WORDS = ['', 'one', 'two', 'three'];
 
 const BUTTON = 'lb-press inline-flex min-h-11 items-center justify-center rounded-[10px] px-5 text-sm font-semibold disabled:cursor-not-allowed';
 const QUIET = 'border border-line text-ink hover:bg-raised disabled:text-muted disabled:hover:bg-transparent';
 const FILLED = 'lb-press-lift disabled:opacity-50';
 
 // One marker per lobby seat: team colours first, then players without a team, then empty seats.
-function SeatPips({ teamA, teamB, waiting }: { teamA: number; teamB: number; waiting: number }) {
+function SeatPips({ teamA, teamB, waiting, seatCount }: { teamA: number; teamB: number; waiting: number; seatCount: number }) {
 	const seats = [
 		...Array<string>(teamA).fill('a'),
 		...Array<string>(teamB).fill('b'),
 		...Array<string>(waiting).fill('waiting'),
-	].slice(0, SEATS);
-	while (seats.length < SEATS) {
+	].slice(0, seatCount);
+	while (seats.length < seatCount) {
 		seats.push('empty');
 	}
 	return (
@@ -52,6 +53,7 @@ function CountdownDrain({ seconds }: { seconds: number }) {
 function LobbyContent() {
 	const { user } = useAuth();
 	const { socket, connected, lobby, error, matchReadiness, connect, clearError } = useLobbySocket();
+	const router = useRouter();
 	const [nameInput, setNameInput] = useState('');
 	const [nameSaved, setNameSaved] = useState(false);
 
@@ -60,6 +62,12 @@ function LobbyContent() {
 	}, [connect]);
 
 	const currentPlayer = lobby?.players.find((player) => player.userId === user?.id);
+	// Only the six players move to the match; someone watching the lobby stays put.
+	const joiningMatch = Boolean(matchReadiness && currentPlayer);
+
+	useEffect(() => {
+		if (joiningMatch && matchReadiness) router.push(`/game/${matchReadiness.gameId}`);
+	}, [joiningMatch, matchReadiness, router]);
 
 	function send(event: string, payload?: unknown) {
 		if (!socket?.connected) return;
@@ -77,7 +85,10 @@ function LobbyContent() {
 	}
 
 	const players = lobby?.players ?? [];
-	const full = (lobby?.playerCount ?? 0) >= SEATS;
+	const teamSize = lobby?.teamSize ?? 3;
+	const seatCount = teamSize * 2;
+	const isHost = Boolean(user && lobby?.hostId === user.id);
+	const full = (lobby?.playerCount ?? 0) >= seatCount;
 	const isLoading = !connected || !lobby;
 	const seconds = lobby?.countdownSecondsRemaining ?? null;
 	const counting = !isLoading && Boolean(currentPlayer) && seconds !== null;
@@ -87,10 +98,12 @@ function LobbyContent() {
 		status = 'Connecting to lobby…';
 	} else if (!currentPlayer) {
 		status = full ? 'This lobby is full.' : 'You have not joined this lobby yet.';
+	} else if (joiningMatch) {
+		status = 'Joining match…';
 	} else if (seconds !== null) {
 		status = `Starting match in ${seconds}…`;
 	} else if (lobby.canReady) {
-		status = `${lobby.readyCount}/6 players ready`;
+		status = `${lobby.readyCount}/${seatCount} players ready`;
 	}
 
 	return (
@@ -101,7 +114,7 @@ function LobbyContent() {
 				<div className="mx-auto flex max-w-[1040px] flex-col gap-8">
 					<header className="flex flex-col gap-2">
 						<h1 className="text-4xl font-extrabold leading-[1.05] tracking-[-0.035em]">Lobby</h1>
-						<p className="text-[15px] text-muted">Six players, two teams of three.</p>
+						<p className="text-[15px] text-muted">Two teams of {TEAM_WORDS[teamSize]}.</p>
 					</header>
 
 					<div>
@@ -112,9 +125,10 @@ function LobbyContent() {
 										teamA={players.filter((player) => player.team === 'a').length}
 										teamB={players.filter((player) => player.team === 'b').length}
 										waiting={players.filter((player) => player.team === null).length}
+										seatCount={seatCount}
 									/>
 									<span className="font-mono text-sm font-semibold">
-										{lobby?.playerCount ?? 0} / {SEATS}<span className="sr-only"> players in the lobby</span>
+										{lobby?.playerCount ?? 0} / {seatCount}<span className="sr-only"> players in the lobby</span>
 									</span>
 								</div>
 								<div role="status" aria-live="polite" className="flex items-center gap-3 text-sm text-muted">
@@ -139,6 +153,30 @@ function LobbyContent() {
 					</div>
 
 					{error && <div role="alert" className="rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">{error.message}</div>}
+
+					{currentPlayer && (
+						<div className="lb-fade-in flex flex-wrap items-center gap-3">
+							<span id="lobby-team-size" className="text-sm font-medium">Players per team</span>
+							{isHost ? (
+								<div role="group" aria-labelledby="lobby-team-size" className="inline-flex rounded-[10px] border border-line p-1">
+									{TEAM_SIZES.map((size) => (
+										<button
+											key={size}
+											onClick={() => send('lobby:set-team-size', size)}
+											disabled={!connected || size === teamSize}
+											aria-pressed={size === teamSize}
+											className={`lb-press min-h-9 rounded-lg px-4 font-mono text-sm font-semibold ${size === teamSize ? 'bg-primary text-on-primary' : 'text-ink hover:bg-raised'}`}
+										>
+											{size}v{size}
+										</button>
+									))}
+								</div>
+							) : (
+								<span className="font-mono text-sm font-semibold">{teamSize}v{teamSize}</span>
+							)}
+							{!isHost && <span className="text-xs text-muted">Only the host can change this.</span>}
+						</div>
+					)}
 
 					{currentPlayer && (
 						<form onSubmit={saveName} className="lb-fade-in flex flex-col gap-1.5">
@@ -166,11 +204,11 @@ function LobbyContent() {
 						{TEAMS.map((team) => {
 							const teamPlayers = players.filter((player) => player.team === team.id);
 							const otherTeam: TeamId = team.id === 'a' ? 'b' : 'a';
-							const otherTeamFull = players.filter((player) => player.team === otherTeam).length >= TEAM_SIZE;
+							const otherTeamFull = players.filter((player) => player.team === otherTeam).length >= teamSize;
 							const isCurrentTeam = currentPlayer?.team === team.id;
 							const isOtherTeam = currentPlayer?.team === otherTeam;
-							const joinDisabled = !connected || (!isCurrentTeam && teamPlayers.length >= TEAM_SIZE) || isCurrentTeam;
-							const openSeats = Math.max(TEAM_SIZE - teamPlayers.length, 0);
+							const joinDisabled = !connected || (!isCurrentTeam && teamPlayers.length >= teamSize) || isCurrentTeam;
+							const openSeats = Math.max(teamSize - teamPlayers.length, 0);
 
 							return (
 								<Fragment key={team.id}>
@@ -178,7 +216,7 @@ function LobbyContent() {
 									<section className="flex flex-col gap-5 rounded-xl border border-line bg-surface p-6">
 										<div className="flex items-baseline justify-between gap-3">
 											<h2 className={`text-[22px] font-bold tracking-[-0.02em] ${team.nameColor}`}>{team.name}</h2>
-											<span className="font-mono text-[13px] font-semibold text-muted">{teamPlayers.length}/{TEAM_SIZE}</span>
+											<span className="font-mono text-[13px] font-semibold text-muted">{teamPlayers.length}/{teamSize}</span>
 										</div>
 										<ul className="flex flex-col gap-2" aria-label={`${team.name} players`}>
 											{teamPlayers.map((player) => (
@@ -218,7 +256,7 @@ function LobbyContent() {
 												disabled={joinDisabled}
 												className={`${BUTTON} w-full ${joinDisabled ? QUIET : `${FILLED} ${team.fill}`}`}
 											>
-												{isCurrentTeam ? 'Your team' : isOtherTeam ? (otherTeamFull ? 'Other team is full' : `Switch to ${team.name}`) : teamPlayers.length >= TEAM_SIZE ? 'Team full' : `Join ${team.name}`}
+												{isCurrentTeam ? 'Your team' : isOtherTeam ? (otherTeamFull ? 'Other team is full' : `Switch to ${team.name}`) : teamPlayers.length >= teamSize ? 'Team full' : `Join ${team.name}`}
 											</button>
 										)}
 									</section>
@@ -227,7 +265,6 @@ function LobbyContent() {
 						})}
 					</div>
 
-					{matchReadiness && <div role="status" className="lb-fade-in rounded-xl border border-line bg-surface px-4 py-3 text-sm text-ink">All six players are ready. Lobby {matchReadiness.lobbyId} is ready for the match component.</div>}
 				</div>
 			</main>
 		</div>

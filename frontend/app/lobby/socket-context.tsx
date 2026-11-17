@@ -23,6 +23,8 @@ export interface LobbyState {
 	canReady: boolean;
 	readyToStart: boolean;
 	countdownSecondsRemaining: number | null;
+	teamSize: number;
+	hostId: string | null;
 }
 
 export interface LobbyError {
@@ -32,6 +34,7 @@ export interface LobbyError {
 
 export interface LobbyReadiness {
 	lobbyId: 'main';
+	gameId: string;
 	players: LobbyPlayer[];
 }
 
@@ -42,6 +45,7 @@ interface LobbySocketContextValue {
 	error: LobbyError | null;
 	matchReadiness: LobbyReadiness | null;
 	connect: () => Socket | null;
+	disconnect: () => void;
 	clearError: () => void;
 }
 
@@ -97,20 +101,27 @@ export function LobbySocketProvider({ children }: { children: ReactNode }) {
 		return nextSocket;
 	}, [user]);
 
-	useEffect(() => {
-		if (user) return;
+	// Closes the lobby connection and forgets its state. Called on sign-out and
+	// by the game page once the player's game socket is up, since the lobby
+	// connection has done its job by then.
+	const disconnect = useCallback(() => {
 		socketRef.current?.socket.disconnect();
 		socketRef.current = null;
 		setSocket(null);
 		setConnected(false);
 		setLobby(null);
-		setError(null);
 		setMatchReadiness(null);
-	}, [user]);
+	}, []);
+
+	useEffect(() => {
+		if (user) return;
+		disconnect();
+		setError(null);
+	}, [user, disconnect]);
 
 	const clearError = useCallback(() => setError(null), []);
 	return (
-		<LobbySocketContext.Provider value={{ socket, connected, lobby, error, matchReadiness, connect, clearError }}>
+		<LobbySocketContext.Provider value={{ socket, connected, lobby, error, matchReadiness, connect, disconnect, clearError }}>
 			{children}
 		</LobbySocketContext.Provider>
 	);

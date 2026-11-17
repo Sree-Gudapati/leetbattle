@@ -2,7 +2,7 @@ import { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
 import { pool } from './db';
 
-const GAME_DURATION_MS = 20 * 60 * 1000;
+export const GAME_DURATION_MS = 20 * 60 * 1000;
 const CODE_SERVICE_URL = process.env.CODE_SERVICE_URL ?? 'http://localhost:4001';
 
 const readyPlayerSchema = z.object({
@@ -11,11 +11,13 @@ const readyPlayerSchema = z.object({
 	team: z.enum(['a', 'b']),
 });
 
+// The lobby host picks 1v1, 2v2 or 3v3, so a match is 2 to 6 players with
+// the same number on each team.
 const startGameBodySchema = z.object({
-	players: z.array(readyPlayerSchema).length(6),
+	players: z.array(readyPlayerSchema).min(2).max(6),
 }).refine(
-	(body) => body.players.filter((player) => player.team === 'a').length === 3,
-	{ message: 'players must be split 3/3 across team a and team b' },
+	(body) => body.players.filter((player) => player.team === 'a').length * 2 === body.players.length,
+	{ message: 'players must be split evenly across team a and team b' },
 );
 
 export type TeamId = 'a' | 'b';
@@ -39,6 +41,24 @@ export interface GameState {
 
 const games = new Map<string, GameState>();
 
+// The live state for a game this process started, if it is still running.
+export function findGame(gameId: string): GameState | undefined {
+	return games.get(gameId);
+}
+
+// The wire form of a GameState for the `game:state` socket event: everything
+// a client needs to render the match, minus the server-only end timer.
+export function serializeGame(game: GameState) {
+	return {
+		gameId: game.gameId,
+		startedAt: game.startedAt,
+		secondsRemaining: Math.max(0, Math.ceil((game.startedAt + GAME_DURATION_MS - Date.now()) / 1000)),
+		scores: game.scores,
+		problemPool: game.problemPool,
+		players: [...game.players.values()],
+	};
+}
+
 class HttpError extends Error {
 	status: number;
 
@@ -51,15 +71,48 @@ class HttpError extends Error {
 // The shared problem pool for a new match: six Easy + three Medium questions
 // from CodeService's GET /problem?difficulty=&quantity= endpoint. Both teams
 // draw from the same nine (see game_problems in sql/schema.sql).
+// Any failure here (an error status, or CodeService not answering at all)
+// becomes a 502, since it's an upstream problem rather than a bad request.
 async function fetchProblemPool(): Promise<string[]> {
-	const [easyRes, mediumRes] = await Promise.all([
-		fetch(`${CODE_SERVICE_URL}/problem?difficulty=Easy&quantity=6`),
-		fetch(`${CODE_SERVICE_URL}/problem?difficulty=Medium&quantity=3`),
-	]);
-	const easyProblems = await easyRes.json() as { task_id: string }[];
-	const mediumProblems = await mediumRes.json() as { task_id: string }[];
+	const unavailable = new HttpError(502, 'could not load the problem pool from CodeService');
+	// The fetch Response, not Express's Response imported at the top of this file.
+	let responses: globalThis.Response[];
+	try {
+		responses = await Promise.all([
+			fetch(`${CODE_SERVICE_URL}/problem?difficulty=Easy&quantity=6`),
+			fetch(`${CODE_SERVICE_URL}/problem?difficulty=Medium&quantity=3`),
+		]);
+	} catch {
+		throw unavailable;
+	}
+	if (responses.some((response) => !response.ok)) throw unavailable;
+	const [easyProblems, mediumProblems] = await Promise.all(
+		responses.map((response) => response.json() as Promise<{ task_id: string }[]>),
+	);
 	return [...easyProblems, ...mediumProblems].map((problem) => problem.task_id);
 }
+
+// Saves the game, its players, their teams and its problem pool in one
+// statement. Postgres applies a statement all-or-nothing, so if any part
+// fails (e.g. the same player listed twice) no half-made game is left behind.
+// The foreign keys between these tables are checked at the end of the
+// statement, so writing parent and child rows together is allowed.
+const SAVE_GAME_SQL = `
+	WITH new_game AS (
+		INSERT INTO game DEFAULT VALUES RETURNING game_id
+	), roster AS (
+		SELECT * FROM unnest($1::uuid[], $2::text[], $3::text[]) AS r(user_id, display_name, team)
+	), new_players AS (
+		INSERT INTO players (game_id, user_id, display_name)
+		SELECT new_game.game_id, roster.user_id, roster.display_name FROM new_game, roster
+	), new_teams AS (
+		INSERT INTO player_teams (game_id, user_id, team)
+		SELECT new_game.game_id, roster.user_id, roster.team FROM new_game, roster
+	), new_problems AS (
+		INSERT INTO game_problems (game_id, task_id)
+		SELECT new_game.game_id, pool.task_id FROM new_game, unnest($4::text[]) AS pool(task_id)
+	)
+	SELECT game_id FROM new_game`;
 
 export function getRoot(_req: Request, res: Response) {
 	res.json({
@@ -69,44 +122,31 @@ export function getRoot(_req: Request, res: Response) {
 }
 
 // Called once LobbyService's countdown fires (lobby:ready-for-match). Takes the
-// six ready players + their teams, and:
-//   - INSERTs the `game` row (started_at defaults to NOW(), ended_at stays null)
-//   - INSERTs matching rows into `players` / `player_teams` for all six
-//   - picks the shared problem pool and INSERTs into `game_problems`
+// ready players (1v1 to 3v3) + their teams, and:
+//   - picks the shared problem pool from CodeService first, so nothing is
+//     saved if that fails
+//   - INSERTs the `game` row (started_at defaults to NOW(), ended_at stays null),
+//     matching `players` / `player_teams` rows and `game_problems`, all in one
+//     statement (see SAVE_GAME_SQL)
 //   - creates the in-memory GameState for this game_id (scores, timer, picks)
 //     and starts the match-duration timer (see scheduleGameEnd)
 // Responds with { gameId } so the frontend can navigate to /game/[gameId].
 export async function createGame(req: Request, res: Response, next: NextFunction) {
 	const body = startGameBodySchema.safeParse(req.body);
 	if (!body.success) {
-		return next(new HttpError(400, 'players must be exactly six entries split 3/3 across teams a and b'));
+		return next(new HttpError(400, 'players must be 2 to 6 entries split evenly across teams a and b'));
 	}
 	const { players } = body.data;
 
 	try {
-		const gameResult = await pool.query<{ game_id: string }>(
-			'INSERT INTO game DEFAULT VALUES RETURNING game_id',
-		);
-		const gameId = gameResult.rows[0].game_id;
-
-		for (const player of players) {
-			await pool.query(
-				'INSERT INTO players (game_id, user_id, display_name) VALUES ($1, $2, $3)',
-				[gameId, player.userId, player.displayName],
-			);
-			await pool.query(
-				'INSERT INTO player_teams (game_id, user_id, team) VALUES ($1, $2, $3)',
-				[gameId, player.userId, player.team],
-			);
-		}
-
 		const problemPool = await fetchProblemPool();
-		for (const taskId of problemPool) {
-			await pool.query(
-				'INSERT INTO game_problems (game_id, task_id) VALUES ($1, $2)',
-				[gameId, taskId],
-			);
-		}
+		const gameResult = await pool.query<{ game_id: string }>(SAVE_GAME_SQL, [
+			players.map((player) => player.userId),
+			players.map((player) => player.displayName),
+			players.map((player) => player.team),
+			problemPool,
+		]);
+		const gameId = gameResult.rows[0].game_id;
 
 		const endTimer = setTimeout(() => {
 			games.delete(gameId);

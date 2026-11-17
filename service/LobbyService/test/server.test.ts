@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import { EncryptJWT } from 'jose';
 import { io } from 'socket.io-client';
 import type { Socket } from 'socket.io-client';
@@ -99,19 +100,40 @@ async function emitAndWaitForState(
 	return state;
 }
 
-beforeEach(async () => {
-	connectedClients = [];
-	process.env.SECRET = SECRET;
-	lobbyService = createLobbyService({ disconnectGraceMs: 500, origins: ['http://localhost:3000'] });
+// US-6-T-2: once the countdown completes the lobby calls GameService's
+// PUT /game, so every suite runs against a stand-in for GameService rather
+// than a live one. By default it answers 201 with a fixed game id; tests
+// that need a failure swap the implementation for that test only.
+let gameServiceFetch: Mock;
+
+function gameServiceResponse(status: number, body: unknown): Response {
+	return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+// (Re)creates the lobby under test on a fresh random port. The default
+// options match production apart from a short disconnect grace; suites that
+// need a quicker countdown or a specific GameService URL pass overrides.
+async function startLobbyService(options: Parameters<typeof createLobbyService>[0] = {}): Promise<void> {
+	await lobbyService?.close();
+	lobbyService = createLobbyService({ disconnectGraceMs: 500, origins: ['http://localhost:3000'], ...options });
 	await new Promise<void>((resolve) => lobbyService.httpServer.listen(0, '127.0.0.1', resolve));
 	const address = lobbyService.httpServer.address();
 	if (!address || typeof address === 'string') throw new Error('Lobby test server did not bind a TCP port.');
 	socketUrl = `http://127.0.0.1:${address.port}`;
+}
+
+beforeEach(async () => {
+	connectedClients = [];
+	process.env.SECRET = SECRET;
+	gameServiceFetch = vi.fn(() => Promise.resolve(gameServiceResponse(201, { gameId: 'game-1' })));
+	vi.stubGlobal('fetch', gameServiceFetch);
+	await startLobbyService();
 });
 
 afterEach(async () => {
 	for (const client of connectedClients) client.disconnect();
 	await lobbyService.close();
+	vi.unstubAllGlobals();
 });
 
 describe('LobbyService socket lifecycle', () => {
@@ -300,3 +322,247 @@ function createUnauthenticatedClient(): Socket {
 	connectedClients.push(client);
 	return client;
 }
+
+// Lobby should let the host choose how many players are on each team
+//  - A new lobby should default to three players per team
+//  - The first player to join the lobby should be the host
+//  - When the host leaves, the next player who joined should become the host
+//  - When the host sets the team size to 2, every lobby client should see a team size of 2
+//  - A player who is not the host should receive a "not-host" error when changing the team size
+//  - A team size of 4 should be rejected with an "invalid-team-size" error
+//  - A team size of 0 should be rejected with an "invalid-team-size" error
+// Lobby should use the chosen team size for capacity and readiness
+//  - With a team size of 2, a third player joining a team should receive a "team-full" error
+//  - With a team size of 1, two connected players on opposite teams should be able to ready up
+// Lobby should remove extra players when the team size shrinks
+//  - When a team has more players than the new team size, random players should be moved off it until it fits
+//  - A player moved off a team should stay in the lobby without a team when the lobby has room
+//  - When the lobby has more players than the new size allows, random players should be removed until it fits
+//  - The host should never be removed from the lobby when the team size shrinks
+//  - Changing the team size should reset every player's ready state
+describe('team size', () => {
+	type SizedSnapshot = LobbySnapshot & { teamSize: number; hostId: string | null };
+
+	// Connects and joins `count` players in index order, so `${prefix}-0` is the host.
+	async function joinPlayers(prefix: string, count: number): Promise<Socket[]> {
+		const clients = await Promise.all(Array.from({ length: count }, (_, index) => connectUser(`${prefix}-${index}`)));
+		for (const [index, client] of clients.entries()) {
+			await emitAndWaitForState(client, 'lobby:join', undefined, (state) => state.playerCount === index + 1);
+		}
+		return clients;
+	}
+
+	// Puts each listed client on the given team, in order.
+	async function assignTeams(prefix: string, clients: Socket[], teams: ('a' | 'b')[]): Promise<void> {
+		for (const [index, team] of teams.entries()) {
+			const userId = `${prefix}-${index}`;
+			await emitAndWaitForState(clients[index], 'lobby:join-team', team, (state) => state.players.find((player) => player.userId === userId)?.team === team);
+		}
+	}
+
+	// The host changes the team size; resolves with the first state showing it.
+	function setTeamSize(host: Socket, size: number): Promise<SizedSnapshot> {
+		return emitAndWaitForState(host, 'lobby:set-team-size', size, (state) => (state as SizedSnapshot).teamSize === size) as Promise<SizedSnapshot>;
+	}
+
+	it('defaults a new lobby to three players per team', async () => {
+		const client = await connectUser('size-default');
+		const state = await emitAndWaitForState(client, 'lobby:join') as SizedSnapshot;
+		expect(state.teamSize).toBe(3);
+	});
+
+	it('makes the first player to join the host', async () => {
+		const clients = await joinPlayers('size-host', 2);
+		const state = await emitAndWaitForState(clients[1], 'lobby:set-name', 'Second') as SizedSnapshot;
+		expect(state.hostId).toBe('size-host-0');
+	});
+
+	it('passes the host to the next player who joined when the host leaves', async () => {
+		const clients = await joinPlayers('size-handover', 3);
+		const state = await emitAndWaitForState(clients[0], 'lobby:leave') as SizedSnapshot;
+		expect(state.hostId).toBe('size-handover-1');
+	});
+
+	it('shows the new team size to every lobby client', async () => {
+		const clients = await joinPlayers('size-broadcast', 2);
+		const seen = nextLobbyState(clients[1], (state) => (state as SizedSnapshot).teamSize === 2) as Promise<SizedSnapshot>;
+		clients[0].emit('lobby:set-team-size', 2);
+		expect((await seen).teamSize).toBe(2);
+	});
+
+	it('rejects a team size change from a player who is not the host', async () => {
+		const clients = await joinPlayers('size-not-host', 2);
+		const error = nextEvent<{ code: string }>(clients[1], 'lobby:error');
+		clients[1].emit('lobby:set-team-size', 2);
+		expect(await error).toMatchObject({ code: 'not-host' });
+	});
+
+	it('rejects a team size of 4', async () => {
+		const [host] = await joinPlayers('size-four', 1);
+		const error = nextEvent<{ code: string }>(host, 'lobby:error');
+		host.emit('lobby:set-team-size', 4);
+		expect(await error).toMatchObject({ code: 'invalid-team-size' });
+	});
+
+	it('rejects a team size of 0', async () => {
+		const [host] = await joinPlayers('size-zero', 1);
+		const error = nextEvent<{ code: string }>(host, 'lobby:error');
+		host.emit('lobby:set-team-size', 0);
+		expect(await error).toMatchObject({ code: 'invalid-team-size' });
+	});
+
+	it('caps each team at the chosen size', async () => {
+		const clients = await joinPlayers('size-cap', 3);
+		await setTeamSize(clients[0], 2);
+		await assignTeams('size-cap', clients, ['a', 'a']);
+		const error = nextEvent<{ code: string }>(clients[2], 'lobby:error');
+		clients[2].emit('lobby:join-team', 'a');
+		expect(await error).toMatchObject({ code: 'team-full' });
+	});
+
+	it('lets a 1v1 lobby ready up', async () => {
+		const clients = await joinPlayers('size-one', 2);
+		await setTeamSize(clients[0], 1);
+		await assignTeams('size-one', clients, ['a', 'b']);
+		const state = await emitAndWaitForState(clients[0], 'lobby:set-ready', true, (lobby) => lobby.readyCount === 1);
+		expect(state.players.find((player) => player.userId === 'size-one-0')?.ready).toBe(true);
+	});
+
+	it('moves random players off a team that is over the new size', async () => {
+		// Team 1 has three players and Team 2 has one; shrinking to 2 leaves Team 1 one over.
+		const clients = await joinPlayers('size-trim', 4);
+		await assignTeams('size-trim', clients, ['a', 'a', 'a', 'b']);
+		const state = await setTeamSize(clients[0], 2);
+		expect(state.players.filter((player) => player.team === 'a')).toHaveLength(2);
+	});
+
+	it('keeps a player moved off a team in the lobby without a team', async () => {
+		const clients = await joinPlayers('size-teamless', 4);
+		await assignTeams('size-teamless', clients, ['a', 'a', 'a', 'b']);
+		const state = await setTeamSize(clients[0], 2);
+		// Four players still fit a 2v2 lobby, so the moved player stays, just without a team.
+		expect(state.players.filter((player) => player.team === null)).toHaveLength(1);
+	});
+
+	it('removes random players when the lobby is over the new size', async () => {
+		const clients = await createFullLobby('size-shrink');
+		const state = await setTeamSize(clients[0], 2);
+		expect(state.playerCount).toBe(4);
+	});
+
+	it('never removes the host when the lobby shrinks', async () => {
+		const clients = await createFullLobby('size-keep-host');
+		const state = await setTeamSize(clients[0], 1);
+		expect(state.players.some((player) => player.userId === 'size-keep-host-0')).toBe(true);
+	});
+
+	it('resets every player\'s ready state when the team size changes', async () => {
+		const clients = await joinPlayers('size-unready', 2);
+		await setTeamSize(clients[0], 1);
+		await assignTeams('size-unready', clients, ['a', 'b']);
+		await emitAndWaitForState(clients[1], 'lobby:set-ready', true, (lobby) => lobby.readyCount === 1);
+		const state = await setTeamSize(clients[0], 2);
+		expect(state.readyCount).toBe(0);
+	});
+});
+
+// US-6-T-2: Lobby should start a game on GameService when the countdown completes
+//  - When the countdown completes with all six players ready, the lobby should call PUT /game on GameService exactly once
+//  - The request body should contain the lobby ID and all six players with their teams
+//  - The "lobby:ready-for-match" event should include the gameId that GameService returned
+// Lobby should not start a game when a player backs out
+//  - If a player becomes unready during the countdown, GameService should not be called
+// Lobby should recover when GameService cannot start the game
+//  - When GameService responds with an error status, every lobby client should receive a "game-start-failed" error
+//  - When GameService is unreachable, every lobby client should receive a "game-start-failed" error
+//  - When the game fails to start, every player's ready state should be reset
+//  - After a failed start, players can ready up again and the lobby should call GameService a second time
+describe('US-6-T-2 game start', () => {
+	const GAME_SERVICE_URL = 'http://game-service.test';
+	// Short enough to keep each test quick, long enough that a test can register
+	// its listeners (or unready a player) before the countdown fires.
+	const COUNTDOWN_MS = 300;
+
+	beforeEach(async () => {
+		await startLobbyService({ matchCountdownMs: COUNTDOWN_MS, gameServiceUrl: GAME_SERVICE_URL });
+	});
+
+	// Fills both teams and readies all six players, which starts the countdown.
+	async function readyUpAll(prefix: string): Promise<Socket[]> {
+		const clients = await createFullLobby(prefix);
+		for (const client of clients) await emitAndWaitForState(client, 'lobby:set-ready', true);
+		return clients;
+	}
+
+	it('calls GameService exactly once when the countdown completes', async () => {
+		const clients = await readyUpAll('US-6-T-2-once');
+		await nextEvent(clients[0], 'lobby:ready-for-match');
+		expect(gameServiceFetch).toHaveBeenCalledTimes(1);
+	});
+
+	it('creates the game with PUT /game on GameService', async () => {
+		const clients = await readyUpAll('US-6-T-2-route');
+		await nextEvent(clients[0], 'lobby:ready-for-match');
+		const [url, init] = gameServiceFetch.mock.calls[0] as [string, RequestInit];
+		expect({ url, method: init.method }).toEqual({ url: `${GAME_SERVICE_URL}/game`, method: 'PUT' });
+	});
+
+	it('sends the lobby id and all six players with their teams', async () => {
+		const clients = await readyUpAll('US-6-T-2-body');
+		await nextEvent(clients[0], 'lobby:ready-for-match');
+		const [, init] = gameServiceFetch.mock.calls[0] as [string, RequestInit];
+		// Players joined in index order, so the roster is sent in that order too.
+		expect(JSON.parse(String(init.body))).toEqual({
+			lobbyId: 'main',
+			players: [0, 1, 2, 3, 4, 5].map((index) => ({
+				userId: `US-6-T-2-body-${index}`,
+				displayName: `Player US-6-T-2-body-${index}`,
+				team: index < 3 ? 'a' : 'b',
+			})),
+		});
+	});
+
+	it('includes the new gameId in lobby:ready-for-match', async () => {
+		const clients = await readyUpAll('US-6-T-2-game-id');
+		const event = await nextEvent<{ gameId: string }>(clients[0], 'lobby:ready-for-match');
+		expect(event.gameId).toBe('game-1');
+	});
+
+	it('does not call GameService when a player unreadies during the countdown', async () => {
+		const clients = await readyUpAll('US-6-T-2-unready');
+		await emitAndWaitForState(clients[0], 'lobby:set-ready', false);
+		await expectNoEvent(clients[0], 'lobby:ready-for-match', COUNTDOWN_MS * 2);
+		expect(gameServiceFetch).not.toHaveBeenCalled();
+	});
+
+	it('reports game-start-failed to the lobby when GameService responds with an error', async () => {
+		gameServiceFetch.mockResolvedValue(gameServiceResponse(500, { message: 'database unavailable' }));
+		const clients = await readyUpAll('US-6-T-2-error');
+		// The observer never readied up, so the error must reach the whole room, not just one socket.
+		const error = await nextEvent<{ code: string }>(clients[5], 'lobby:error');
+		expect(error.code).toBe('game-start-failed');
+	});
+
+	it('reports game-start-failed to the lobby when GameService is unreachable', async () => {
+		gameServiceFetch.mockRejectedValue(new Error('connect ECONNREFUSED'));
+		const clients = await readyUpAll('US-6-T-2-unreachable');
+		const error = await nextEvent<{ code: string }>(clients[0], 'lobby:error');
+		expect(error.code).toBe('game-start-failed');
+	});
+
+	it('resets every player\'s ready state when the game fails to start', async () => {
+		gameServiceFetch.mockRejectedValue(new Error('connect ECONNREFUSED'));
+		const clients = await readyUpAll('US-6-T-2-reset');
+		const state = await nextLobbyState(clients[0], (lobby) => lobby.readyCount === 0);
+		expect(state.players.every((player) => !player.ready)).toBe(true);
+	});
+
+	it('lets players ready up again and calls GameService a second time after a failed start', async () => {
+		gameServiceFetch.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+		const clients = await readyUpAll('US-6-T-2-retry');
+		await nextLobbyState(clients[0], (lobby) => lobby.readyCount === 0);
+		for (const client of clients) await emitAndWaitForState(client, 'lobby:set-ready', true);
+		await nextEvent(clients[0], 'lobby:ready-for-match');
+		expect(gameServiceFetch).toHaveBeenCalledTimes(2);
+	});
+});
