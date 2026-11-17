@@ -25,6 +25,7 @@
 //
 // GameService should not take chat messages after the game has ended
 //  - After "game:ended", a "chat:send" should not be saved to "team_messages"
+//  - After "game:ended", a "chat:send" should send no "chat:message"
 //
 // The rest of chat-test-pseudo.md is added one test at a time.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -310,6 +311,18 @@ describe('saving team chat messages', () => {
 });
 
 describe('team chat after the game has ended', () => {
+	it('sends no chat:message for a chat:send sent after game:ended', async () => {
+		// The players' sockets close as the game ends, so a message sent after
+		// that would reach no client; watch what the server sends out instead.
+		const broadcast = vi.spyOn(gameServer.io.of('/').adapter, 'broadcast');
+		await sendChatAsGameEnds('too late');
+		// Give a (wrongly) accepted message time to be saved and sent.
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		const chatMessages = broadcast.mock.calls.filter(([packet]) => packet.data?.[0] === 'chat:message');
+		broadcast.mockRestore();
+		expect(chatMessages).toEqual([]);
+	});
+
 	it('does not save a chat:send sent after game:ended', async () => {
 		await sendChatAsGameEnds('too late');
 		// Give a (wrongly) accepted message time to finish saving.
