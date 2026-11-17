@@ -17,6 +17,8 @@ const DEFAULT_RECONNECT_GRACE_MS = 30_000;
 const DEFAULT_SUBMIT_COOLDOWN_MS = 5_000;
 // How long players have to ban before play starts with the bans made so far.
 const DEFAULT_BAN_WINDOW_MS = 30_000;
+// The longest team chat message GameService accepts, in characters.
+const MAX_CHAT_LENGTH = 500;
 
 interface ServerOptions {
 	origins?: string[];
@@ -299,12 +301,14 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 		// Team chat (US-3-T-2): passes a player's message on to their own team,
 		// sender included. The team room comes from the server's roster, never the client.
 		socket.on('chat:send', (message: { text?: unknown }) => {
+			const text = message?.text;
+			if (typeof text !== 'string' || text.length > MAX_CHAT_LENGTH) return;
 			io.to(`${gameRoom(game)}:${player.team}`).emit('chat:message', {
 				id: randomUUID(),
 				userId: user.id,
 				displayName: player.displayName,
 				team: player.team,
-				text: message?.text,
+				text,
 				sentAt: new Date().toISOString(),
 			});
 		});
