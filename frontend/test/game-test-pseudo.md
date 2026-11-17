@@ -79,3 +79,9 @@
 
  // Game socket context should send bans
  //  - Banning should send a "game:ban" event with the questionId to the server
+
+// US-6-T-5: The game page should not list the match's questions
+// (replaces "Each problem in the match pool should be listed" and "Game page should
+// show each problem's details" above, which were removed with the list)
+ //  - While the game is waiting for players, no question name should be displayed
+ //  - While the game is playing, the "Problems" list should not be displayed
