@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import type { Express } from 'express';
@@ -298,7 +299,14 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 		// Team chat (US-3-T-2): passes a player's message on to their own team,
 		// sender included. The team room comes from the server's roster, never the client.
 		socket.on('chat:send', (message: { text?: unknown }) => {
-			io.to(`${gameRoom(game)}:${player.team}`).emit('chat:message', { text: message?.text });
+			io.to(`${gameRoom(game)}:${player.team}`).emit('chat:message', {
+				id: randomUUID(),
+				userId: user.id,
+				displayName: player.displayName,
+				team: player.team,
+				text: message?.text,
+				sentAt: new Date().toISOString(),
+			});
 		});
 
 		// A team forfeits once every teammate still in the game has voted to.
