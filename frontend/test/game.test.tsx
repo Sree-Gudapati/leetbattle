@@ -60,6 +60,8 @@
 //  - Clicking "Run" should run the code against CodeService
 // A player's code should only go to their own team
 //  - Editing code should send it to the game (team-only relay), not to the lobby socket
+// US-3-T-2: The match page should show team chat while the game is being played
+//  - While playing, the match page should display a "Team chat" panel
 //  (CodeService's fetch and Monaco are mocked; no test touches a backend service)
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -169,7 +171,7 @@ function configureGame(context: Record<string, unknown> = {}) {
 
 // The page once the socket is up and the server has sent the match.
 function configureConnectedGame(overrides: Record<string, unknown> = {}) {
-	configureGame({ socket: { connected: true, emit: vi.fn() }, connected: true, game: gameState(overrides) });
+	configureGame({ socket: { connected: true, emit: vi.fn(), on: vi.fn(), off: vi.fn() }, connected: true, game: gameState(overrides) });
 }
 
 // Matches the NEXT_PUBLIC_CODE_URL fallback in app/editor/controller.tsx.
@@ -624,5 +626,14 @@ describe('game page editor after the bans', () => {
 
 		// Code only leaves through the game (team-only); the lobby socket would reach both teams.
 		expect(gameMocks.io).not.toHaveBeenCalled();
+	});
+});
+
+describe('game page team chat', () => {
+	it('US-3-T-2 shows a "Team chat" panel while the game is playing', async () => {
+		configureConnectedGame();
+		render(<GamePage />);
+
+		expect(await screen.findByRole('region', { name: 'Team chat' })).toBeTruthy();
 	});
 });
