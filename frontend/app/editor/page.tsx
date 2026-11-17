@@ -1,4 +1,5 @@
 import Monaco from './components/monaco';
+import CodeTabs from './components/code-tabs';
 import QuestionPanel from './components/question-panel';
 import TestCasesPanel from './components/test-cases-panel';
 import SubmitBar from './components/submit-bar';
@@ -22,8 +23,11 @@ export default function editor() {
 						</div>
 
 						<div className="flex w-1/2 flex-col">
-							<div className="h-3/5 min-h-0">
-								<Monaco />
+							<div className="flex h-3/5 min-h-0 flex-col">
+								<CodeTabs />
+								<div className="min-h-0 flex-1">
+									<Monaco />
+								</div>
 							</div>
 							<SubmitBar />
 							<ResultsPanel />
