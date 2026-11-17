@@ -16,8 +16,8 @@
 //  - When a player's socket drops, the remaining players should receive a game state showing that player as disconnected
 // Game should wait for its players before the clock starts
 //  - A new game should be waiting for players
-//  - When every player has connected, the game should start playing
-//  - When the join wait runs out, the game should start with whoever has connected
+//  - (changed by the ban phase) When every player has connected, the game should move to "banning"
+//  - (changed by the ban phase) When the join wait runs out, the game should move to "banning" with whoever has connected
 // Game should give a dropped player time to reconnect
 //  - Right after a player's socket drops, they should not be marked as left
 //  - When a player reconnects within the window, they should not be marked as left
@@ -56,6 +56,45 @@
 //  - When the scores are level, the game should be a draw
 // Game should still finish when saving its end fails
 //  - When the database can't save the end of the game, the players should still receive the result
+//
+// Ban phase: every player bans one of the nine, the rest are played; a ban
+// window, and anyone who hasn't banned when it runs out is skipped.
+// Game should hold a ban phase before the clock starts
+//  - When every player has connected, the game should move to "banning"
+//  - When the join wait runs out, the game should move to "banning" with whoever has connected
+//  - While banning, the game state should show the full 20 minutes remaining
+//  - While banning, the game state should include how many seconds are left to ban
+// GameService socket should send each problem's topics for the ban screen
+//  - Each problem in the match pool should carry its tags from CodeService as topics
+// Players should be able to ban one problem each
+//  - When a player bans a problem, the game state should show that problem as banned by that player
+//  - The ban should carry the banning player's display name
+//  - The ban should carry the banning player's team
+//  - When a player bans, the other players should receive a game state showing the ban
+//  - A player's second ban should be rejected with "already-banned"
+//  - Banning a problem another player already banned should be rejected with "problem-banned"
+//  - Banning a problem that isn't in the match pool should be rejected with "unknown-problem"
+//  - Banning once play has started should be rejected with "not-banning"
+//  - Submitting a solution during the ban phase should be rejected with "not-playing"
+// Play should start once the bans are in
+//  - When every player has banned, the game should start playing
+//  - Once play starts, the match pool should only list the problems that weren't banned
+//  - In a 3v3, six bans should leave three problems in play
+//  - In a 1v1, two bans should leave seven problems in play
+//  - When the ban window runs out, the game should start playing with the bans made so far
+//  - When a player has left during the ban phase, the game should start once every remaining player has banned
+// Game should give a player who drops during the ban phase time to reconnect
+//  - When a player's socket drops during the ban phase, their reconnect window should start
+//  - When every player on a team has left during the ban phase, the other team should win by disconnect
+// Game should be won on the problems left in play
+//  - When a team has solved every problem left after the bans, that team should win with reason "solved"
+// Bans should be saved
+//  - Once play starts, the game's saved problems (game_problems) should only be the ones left in play
+//
+// Because a game now bans before it plays, every older test that needs a game
+// in play (forfeit, submitting, winning, ending) gets there through
+// playingGame(), which has every player ban first. What those tests check is
+// unchanged.
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EncryptJWT } from 'jose';
@@ -64,20 +103,40 @@ import type { Socket } from 'socket.io-client';
 import { gameServer, request, socketUrl } from './setup';
 import { pool } from '../src/db';
 import { resultOnTime } from '../src/server';
-import { FAKE_GRADING_MS, fakeCodeServiceFetch, sixReadyPlayers } from './fixtures';
+import { FAKE_GRADING_MS, fakeCodeServiceFetch, fakeTags, sixReadyPlayers } from './fixtures';
 import type { ReadyPlayer } from './fixtures';
 
 // Mirrors the JWE session tokens AuthService issues (see LobbyService's auth
 // tests): encrypted with the shared SECRET, carrying the account's id/email.
 const SECRET = 'local-test-secret-'.padEnd(64, 'x');
 const MATCH_SECONDS = 20 * 60;
+// Matches the ban window test/setup.ts gives the server.
+const BAN_WINDOW_MS = 1000;
+
+// Who banned a problem, as the ban screen shows it.
+interface BannedBy {
+	userId: string;
+	displayName: string;
+	team: 'a' | 'b';
+}
+
+// One problem in the pool. topics are CodeService's tags (all the ban screen
+// shows), and bannedBy is null until a player bans it.
+interface PoolProblemPayload {
+	taskId: string;
+	questionId: number;
+	difficulty: string;
+	topics: string[];
+	bannedBy: BannedBy | null;
+}
 
 // The payload GameService sends on `game:state`.
 interface GameStatePayload {
 	gameId: string;
-	phase: 'waiting' | 'playing';
+	phase: 'waiting' | 'banning' | 'playing';
 	secondsRemaining: number;
-	problemPool: { taskId: string; questionId: number; difficulty: string }[];
+	banSecondsRemaining: number; // seconds left in the ban window
+	problemPool: PoolProblemPayload[];
 	solved: Record<'a' | 'b', string[]>; // task_ids each team has solved
 	players: { userId: string; team: 'a' | 'b'; connected: boolean; left: boolean }[];
 	forfeitVotes: Record<'a' | 'b', number>;
@@ -182,6 +241,49 @@ async function waitForServerSockets(count: number): Promise<void> {
 		if (Date.now() > deadline) throw new Error('Timed out waiting for sockets to close');
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
+}
+
+// What GameService answers a `game:ban` with: ok, or why the ban was refused.
+interface BanResponse {
+	ok?: boolean;
+	error?: string;
+}
+
+// Bans `questionId` for the player on `socket` and resolves with GameService's answer.
+function ban(socket: Socket, questionId: number): Promise<BanResponse> {
+	return socket.timeout(2_000).emitWithAck('game:ban', { questionId });
+}
+
+// A fresh game with every player connected, resolved once the bans have
+// started. Gives back the sockets (in roster order), the first banning state,
+// and the full nine-problem pool as it stood when the bans began.
+async function banningGame(teamA: number, teamB: number) {
+	const game = await newGame(teamA, teamB);
+	const first = await joinGame(game.players[0].userId, game.gameId);
+	// Listening before the others join, since the last join starts the bans.
+	const banning = nextState(first.socket, (state) => state.phase === 'banning');
+	const others: Socket[] = [];
+	for (const player of game.players.slice(1)) others.push((await joinGame(player.userId, game.gameId)).socket);
+	const state = await banning;
+	return { game, sockets: [first.socket, ...others], state, pool: state.problemPool };
+}
+
+// Has each socket ban a different problem (the i-th socket bans pool[i]) and
+// resolves with the first state once the game is playing.
+async function banEveryone(sockets: Socket[], pool: PoolProblemPayload[]): Promise<GameStatePayload> {
+	const playing = nextState(sockets[0], (state) => state.phase === 'playing');
+	for (const [i, socket] of sockets.entries()) await ban(socket, pool[i].questionId);
+	return playing;
+}
+
+// A game that is already playing, with every player connected and every
+// player's ban made. `pool` is the problems left in play, worked out from
+// the bans this helper made rather than read back from the server, so
+// tests on winning really check the pool the bans left behind.
+async function playingGame(teamA: number, teamB: number) {
+	const { game, sockets, pool } = await banningGame(teamA, teamB);
+	await banEveryone(sockets, pool);
+	return { game, sockets, pool: pool.slice(sockets.length) };
 }
 
 // The stand-in for CodeService, kept so tests can check what was sent to it.
@@ -298,18 +400,20 @@ describe('waiting for players', () => {
 		expect(state.phase).toBe('waiting');
 	});
 
-	it('starts playing once every player has connected', async () => {
+	// Changed by the ban phase: a full game now bans before it plays.
+	it('moves to banning once every player has connected', async () => {
 		const game = await newGame(1, 1);
 		const first = await joinGame(game.players[0].userId, game.gameId);
-		const playing = nextState(first.socket, (state) => state.phase === 'playing');
+		const banning = nextState(first.socket, (state) => state.phase === 'banning');
 		await joinGame(game.players[1].userId, game.gameId);
-		expect((await playing).phase).toBe('playing');
+		expect((await banning).phase).toBe('banning');
 	});
 
-	it('starts with whoever has connected when the join wait runs out', async () => {
+	// Changed by the ban phase: the join wait running out starts the bans, not play.
+	it('moves to banning with whoever has connected when the join wait runs out', async () => {
 		const game = await newGame(1, 1);
 		const first = await joinGame(game.players[0].userId, game.gameId);
-		const state = await nextState(first.socket, (next) => next.phase === 'playing');
+		const state = await nextState(first.socket, (next) => next.phase === 'banning');
 		expect(state.players.filter((player) => player.connected)).toHaveLength(1);
 	});
 });
@@ -349,8 +453,7 @@ describe('reconnect window', () => {
 	});
 
 	it('gives the other team the win by disconnect when a whole team has left', async () => {
-		const game = await newGame(1, 1);
-		const [teamA, teamB] = await joinAll(game);
+		const { sockets: [teamA, teamB] } = await playingGame(1, 1);
 		const ended = nextEvent<GameResult>(teamA, 'game:ended');
 		teamB.disconnect();
 		expect(await ended).toEqual({ winner: 'a', reason: 'disconnect' });
@@ -359,8 +462,7 @@ describe('reconnect window', () => {
 
 describe('forfeit', () => {
 	it('keeps going with one vote counted when one of two teammates forfeits', async () => {
-		const game = await newGame(2, 2);
-		const [first] = await joinAll(game);
+		const { sockets: [first] } = await playingGame(2, 2);
 		const voted = nextState(first, (state) => state.forfeitVotes.a === 1);
 		first.emit('game:forfeit');
 		const state = await voted;
@@ -368,8 +470,7 @@ describe('forfeit', () => {
 	});
 
 	it('counts the same player forfeiting twice once', async () => {
-		const game = await newGame(2, 2);
-		const [first] = await joinAll(game);
+		const { sockets: [first] } = await playingGame(2, 2);
 		const firstVote = nextState(first, (state) => state.forfeitVotes.a === 1);
 		first.emit('game:forfeit');
 		await firstVote;
@@ -379,8 +480,7 @@ describe('forfeit', () => {
 	});
 
 	it('gives the other team the win by forfeit once every connected teammate has forfeited', async () => {
-		const game = await newGame(2, 2);
-		const [first, second, otherTeam] = await joinAll(game);
+		const { sockets: [first, second, otherTeam] } = await playingGame(2, 2);
 		const ended = nextEvent<GameResult>(otherTeam, 'game:ended');
 		first.emit('game:forfeit');
 		second.emit('game:forfeit');
@@ -391,8 +491,7 @@ describe('forfeit', () => {
 describe('after the game ends', () => {
 	// A 1v1 that team a forfeits straight away.
 	async function forfeitedGame() {
-		const game = await newGame(1, 1);
-		const sockets = await joinAll(game);
+		const { game, sockets } = await playingGame(1, 1);
 		const ended = nextEvent<GameResult>(sockets[1], 'game:ended');
 		sockets[0].emit('game:forfeit');
 		await ended;
@@ -457,15 +556,6 @@ interface SubmitResponse {
 // on "crash", and calls anything else a wrong answer.
 function submit(socket: Socket, questionId: number, code: string): Promise<SubmitResponse> {
 	return socket.timeout(2_000).emitWithAck('game:submit', { questionId, code });
-}
-
-// A game that is already playing, with every player connected, plus its pool.
-async function playingGame(teamA: number, teamB: number) {
-	const game = await newGame(teamA, teamB);
-	const first = await joinGame(game.players[0].userId, game.gameId);
-	const others: Socket[] = [];
-	for (const player of game.players.slice(1)) others.push((await joinGame(player.userId, game.gameId)).socket);
-	return { sockets: [first.socket, ...others], pool: first.state.problemPool };
 }
 
 // Long enough for the test server's 100 ms submit cooldown (test/setup.ts) to pass.
@@ -558,6 +648,10 @@ describe('submission lock and cooldown', () => {
 });
 
 describe('winning by solving every problem', () => {
+	// Also covers the ban phase's "When a team has solved every problem left
+	// after the bans, that team should win with reason "solved"": playingGame's
+	// pool is the seven problems the 1v1's two bans left, and solving just those
+	// seven has to be enough.
 	it('gives the win to the team that solves every problem, with reason "solved"', async () => {
 		const { sockets, pool } = await playingGame(1, 1);
 		// Team a solves all but the last problem, waiting out the cooldown each time.
@@ -593,8 +687,7 @@ describe('when saving the end of the game fails', () => {
 	});
 
 	it('still sends the players the result', async () => {
-		const game = await newGame(1, 1);
-		const [teamA, teamB] = await joinAll(game);
+		const { sockets: [teamA, teamB] } = await playingGame(1, 1);
 		// Only the end-of-game UPDATE fails; every other query runs as normal.
 		const query = pool.query.bind(pool);
 		vi.spyOn(pool, 'query').mockImplementation(((text: unknown, ...rest: unknown[]) => (
@@ -605,5 +698,190 @@ describe('when saving the end of the game fails', () => {
 		const ended = nextEvent<GameResult>(teamB, 'game:ended');
 		teamA.emit('game:forfeit');
 		expect(await ended).toEqual({ winner: 'b', reason: 'forfeit' });
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Ban phase. Between connecting and playing, every player bans one of the
+// nine problems; the match is played on the ones left. The ban window in
+// test/setup.ts is BAN_WINDOW_MS, longer than the 300 ms reconnect window.
+// ---------------------------------------------------------------------------
+
+describe('ban phase before the clock starts', () => {
+	it('shows the full 20 minutes remaining while banning', async () => {
+		const { state } = await banningGame(1, 1);
+		// The match clock only starts once the bans are in.
+		expect(state.secondsRemaining).toBe(MATCH_SECONDS);
+	});
+
+	it('includes how many seconds are left to ban', async () => {
+		const { state } = await banningGame(1, 1);
+		// The bans began moments ago, so (nearly) the whole window is left.
+		expect(state.banSecondsRemaining > 0 && state.banSecondsRemaining <= BAN_WINDOW_MS / 1000).toBe(true);
+	});
+});
+
+describe('problem topics for the ban screen', () => {
+	it('gives each problem in the pool its tags from CodeService as topics', async () => {
+		const { state } = await joinGame(players[0].userId);
+		// The fake CodeService tags each problem by its question_id (fakeTags).
+		expect(state.problemPool.map((problem) => problem.topics))
+			.toEqual(state.problemPool.map((problem) => fakeTags(problem.questionId)));
+	});
+});
+
+describe('banning a problem', () => {
+	it('shows the problem as banned by the player who banned it', async () => {
+		const { game, sockets, pool } = await banningGame(1, 1);
+		const banned = nextState(sockets[0], (state) => state.problemPool.some((problem) => problem.bannedBy));
+		await ban(sockets[0], pool[0].questionId);
+		const state = await banned;
+		expect(state.problemPool.find((problem) => problem.questionId === pool[0].questionId)?.bannedBy?.userId)
+			.toBe(game.players[0].userId);
+	});
+
+	it('gives the ban the banning player\'s display name', async () => {
+		const { sockets, pool } = await banningGame(1, 1);
+		const banned = nextState(sockets[0], (state) => state.problemPool.some((problem) => problem.bannedBy));
+		await ban(sockets[0], pool[0].questionId);
+		const state = await banned;
+		// The fixtures name the first player "player-0".
+		expect(state.problemPool.find((problem) => problem.questionId === pool[0].questionId)?.bannedBy?.displayName)
+			.toBe('player-0');
+	});
+
+	it('gives the ban the banning player\'s team', async () => {
+		const { sockets, pool } = await banningGame(1, 1);
+		const banned = nextState(sockets[0], (state) => state.problemPool.some((problem) => problem.bannedBy));
+		await ban(sockets[0], pool[0].questionId);
+		const state = await banned;
+		// sockets[0] is the team a player.
+		expect(state.problemPool.find((problem) => problem.questionId === pool[0].questionId)?.bannedBy?.team)
+			.toBe('a');
+	});
+
+	it('tells the other players about the ban', async () => {
+		const { game, sockets, pool } = await banningGame(1, 1);
+		// Listening on the other player's socket, not the banner's.
+		const seen = nextState(sockets[1], (state) => state.problemPool.some((problem) => problem.bannedBy));
+		await ban(sockets[0], pool[0].questionId);
+		const state = await seen;
+		expect(state.problemPool.find((problem) => problem.questionId === pool[0].questionId)?.bannedBy?.userId)
+			.toBe(game.players[0].userId);
+	});
+
+	it('rejects a player\'s second ban with "already-banned"', async () => {
+		const { sockets, pool } = await banningGame(1, 1);
+		await ban(sockets[0], pool[0].questionId);
+		// The other player hasn't banned yet, so the bans are still going on.
+		const response = await ban(sockets[0], pool[1].questionId);
+		expect(response.error).toBe('already-banned');
+	});
+
+	it('rejects banning a problem another player already banned with "problem-banned"', async () => {
+		const { sockets, pool } = await banningGame(1, 1);
+		await ban(sockets[0], pool[0].questionId);
+		const response = await ban(sockets[1], pool[0].questionId);
+		expect(response.error).toBe('problem-banned');
+	});
+
+	it('rejects banning a problem that isn\'t in the match pool with "unknown-problem"', async () => {
+		const { sockets } = await banningGame(1, 1);
+		const response = await ban(sockets[0], -1);
+		expect(response.error).toBe('unknown-problem');
+	});
+
+	it('rejects a ban once play has started with "not-banning"', async () => {
+		const { sockets, pool } = await playingGame(1, 1);
+		const response = await ban(sockets[0], pool[0].questionId);
+		expect(response.error).toBe('not-banning');
+	});
+
+	it('rejects a submission during the ban phase with "not-playing"', async () => {
+		const { sockets, pool } = await banningGame(1, 1);
+		const response = await submit(sockets[0], pool[0].questionId, 'correct');
+		expect(response.error).toBe('not-playing');
+	});
+});
+
+describe('starting play once the bans are in', () => {
+	it('starts playing once every player has banned', async () => {
+		const { sockets, pool } = await banningGame(1, 1);
+		const state = await banEveryone(sockets, pool);
+		expect(state.phase).toBe('playing');
+	});
+
+	it('lists only the problems that weren\'t banned once play starts', async () => {
+		const { sockets, pool } = await banningGame(1, 1);
+		const state = await banEveryone(sockets, pool);
+		// banEveryone bans pool[0] and pool[1]; the other seven are left.
+		expect(state.problemPool.map((problem) => problem.questionId))
+			.toEqual(pool.slice(2).map((problem) => problem.questionId));
+	});
+
+	it('leaves three problems in play after a 3v3\'s six bans', async () => {
+		const { sockets, pool } = await banningGame(3, 3);
+		const state = await banEveryone(sockets, pool);
+		expect(state.problemPool).toHaveLength(3);
+	});
+
+	it('leaves seven problems in play after a 1v1\'s two bans', async () => {
+		const { sockets, pool } = await banningGame(1, 1);
+		const state = await banEveryone(sockets, pool);
+		expect(state.problemPool).toHaveLength(7);
+	});
+
+	it('starts playing with the bans made so far when the ban window runs out', async () => {
+		const { sockets, pool } = await banningGame(1, 1);
+		// Only one of the two players bans; the other is skipped.
+		await ban(sockets[0], pool[0].questionId);
+		const state = await nextState(sockets[0], (next) => next.phase === 'playing');
+		expect(state.problemPool).toHaveLength(8);
+	});
+
+	it('starts once every remaining player has banned when a player has left', async () => {
+		const { game, sockets, pool } = await banningGame(2, 2);
+		const leaving = game.players[3].userId;
+		// sockets[3] (team b) drops and stays gone until marked as left.
+		const left = nextState(sockets[0], (state) => state.players.some((player) => player.userId === leaving && player.left));
+		sockets[3].disconnect();
+		await left;
+		const bansStarted = Date.now();
+		await banEveryone(sockets.slice(0, 3), pool);
+		// Play starts on the last remaining ban, well before the ban window
+		// would have run out - not because the window ran out.
+		expect(Date.now() - bansStarted < BAN_WINDOW_MS / 2).toBe(true);
+	});
+});
+
+describe('reconnect window during the ban phase', () => {
+	it('starts a dropped player\'s reconnect window during the ban phase', async () => {
+		const { game, sockets } = await banningGame(2, 2);
+		const dropping = game.players[1].userId;
+		const left = nextState(sockets[0], (state) => state.players.some((player) => player.userId === dropping && player.left));
+		sockets[1].disconnect();
+		// The reconnect window (300 ms) is shorter than the ban window, so the
+		// player is marked as left while the bans are still going on.
+		expect((await left).phase).toBe('banning');
+	});
+
+	it('gives the other team the win by disconnect when a whole team leaves during the ban phase', async () => {
+		const { sockets } = await banningGame(1, 1);
+		const ended = nextEvent<GameResult>(sockets[0], 'game:ended');
+		const dropped = Date.now();
+		sockets[1].disconnect();
+		const result = await ended;
+		// Decided during the bans, not after the ban window ran out and play began.
+		expect({ result, duringBans: Date.now() - dropped < BAN_WINDOW_MS })
+			.toEqual({ result: { winner: 'a', reason: 'disconnect' }, duringBans: true });
+	});
+});
+
+describe('saving the bans', () => {
+	it('saves only the problems left in play once play starts', async () => {
+		const { game } = await playingGame(1, 1);
+		const saved = await pool.query('SELECT task_id FROM game_problems WHERE game_id = $1', [game.gameId]);
+		// Nine problems, two banned.
+		expect(saved.rows).toHaveLength(7);
 	});
 });

@@ -35,6 +35,19 @@
 //  (CodeService's fetch is mocked; no test calls a real service)
 // Game page should show a win by solving every problem
 //  - When the game was won by solving every problem, "by solving every problem" should be displayed
+// Game page should show the ban screen during the ban phase
+//  - While the game is banning, "Ban a question" should be displayed
+//  - While the game is banning, the problem list for play should not be displayed
+//  - While the game is banning, the Forfeit button should not be shown
+//  - While the game is banning, the time left to ban should be displayed
+//  - Once the game is playing, "Ban a question" should not be displayed
+// Game page should run the ban screen from the game state
+//  - Each problem in the match pool should be shown on the ban screen by its topics
+//  - Clicking "Ban this question" should send that problem's questionId to the game
+//  - A problem the game state shows banned by another player should display "Banned by <name>"
+//  - With four players and one ban made, "1 of 4 bans made" should be displayed
+//  - With four players, the ban screen should display four ban markers
+//  (all socket traffic is mocked; no test touches GameService)
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -47,6 +60,7 @@ const gameMocks = vi.hoisted(() => ({
 	connect: vi.fn(),
 	clearError: vi.fn(),
 	forfeit: vi.fn(),
+	ban: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -123,6 +137,7 @@ function configureGame(context: Record<string, unknown> = {}) {
 		connect: gameMocks.connect,
 		clearError: gameMocks.clearError,
 		forfeit: gameMocks.forfeit,
+		ban: gameMocks.ban,
 		...context,
 	});
 }
@@ -406,5 +421,113 @@ describe('game page problem details', () => {
 		await user.click(problemButton(/Two Sum/));
 
 		expect(await screen.findByText('Couldn\'t load this problem.')).toBeTruthy();
+	});
+});
+
+describe('game page during the ban phase', () => {
+	// The nine-problem pool as GameService sends it while banning: each problem
+	// carries its topics and who (if anyone) has banned it.
+	const banPool = [
+		{ taskId: 'two-sum', questionId: 1, difficulty: 'Easy', topics: ['Array', 'Hash Table'], bannedBy: null },
+		{ taskId: 'valid-parentheses', questionId: 2, difficulty: 'Easy', topics: ['Stack'], bannedBy: null },
+		{ taskId: 'climbing-stairs', questionId: 3, difficulty: 'Easy', topics: ['Dynamic Programming'], bannedBy: null },
+		{ taskId: 'valid-palindrome', questionId: 4, difficulty: 'Easy', topics: ['String'], bannedBy: null },
+		{ taskId: 'search-insert-position', questionId: 5, difficulty: 'Easy', topics: ['Binary Search'], bannedBy: null },
+		{ taskId: 'assign-cookies', questionId: 6, difficulty: 'Easy', topics: ['Greedy'], bannedBy: null },
+		{ taskId: 'number-of-islands', questionId: 7, difficulty: 'Medium', topics: ['Graph'], bannedBy: null },
+		{ taskId: 'coin-change', questionId: 8, difficulty: 'Medium', topics: ['Dynamic Programming', 'Array'], bannedBy: null },
+		{ taskId: 'course-schedule', questionId: 9, difficulty: 'Medium', topics: ['Topological Sort'], bannedBy: null },
+	];
+
+	// Grace (u2, Team 1) has banned the second problem.
+	const poolWithGraceBan = banPool.map((entry) => (entry.questionId === 2
+		? { ...entry, bannedBy: { userId: 'u2', displayName: 'Grace', team: 'a' } }
+		: entry));
+
+	// A 2v2: Ada and Grace on Team 1, Alan and Edsger on Team 2.
+	const fourPlayers = roster.filter((entry) => ['u1', 'u2', 'u4', 'u5'].includes(entry.userId));
+
+	// The page while the bans are going on, 25 seconds left to ban.
+	function configureBanning(overrides: Record<string, unknown> = {}) {
+		configureConnectedGame({ phase: 'banning', startedAt: null, banSecondsRemaining: 25, problemPool: banPool, ...overrides });
+	}
+
+	it('shows "Ban a question" while the game is banning', () => {
+		configureBanning();
+		render(<GamePage />);
+
+		expect(screen.getByRole('heading', { name: 'Ban a question' })).toBeTruthy();
+	});
+
+	it('hides the problem list for play while the game is banning', () => {
+		configureBanning();
+		render(<GamePage />);
+
+		// The "Problems" list is the in-match list; problems are only picked once play starts.
+		expect(screen.queryByRole('list', { name: 'Problems' })).toBeNull();
+	});
+
+	it('hides the Forfeit button while the game is banning', () => {
+		configureBanning();
+		render(<GamePage />);
+
+		expect(screen.queryByRole('button', { name: 'Forfeit' })).toBeNull();
+	});
+
+	it('shows the time left to ban while the game is banning', () => {
+		configureBanning();
+		render(<GamePage />);
+
+		// 25 seconds left in the ban window, shown as minutes and seconds.
+		expect(screen.getByText('0:25')).toBeTruthy();
+	});
+
+	it('does not show "Ban a question" once the game is playing', () => {
+		configureConnectedGame();
+		render(<GamePage />);
+
+		expect(screen.queryByRole('heading', { name: 'Ban a question' })).toBeNull();
+	});
+
+	it('shows each problem in the pool by its topics on the ban screen', () => {
+		configureBanning();
+		render(<GamePage />);
+
+		// Every topic of every problem, in pool order.
+		expect(screen.getAllByTestId('topic').map((topic) => topic.textContent))
+			.toEqual(banPool.flatMap((entry) => entry.topics));
+	});
+
+	it('sends the problem\'s questionId to the game when "Ban this question" is clicked', async () => {
+		const user = userEvent.setup();
+		configureBanning();
+		render(<GamePage />);
+
+		// The third problem, climbing-stairs, has questionId 3.
+		await user.click(screen.getAllByRole('button', { name: /Ban this question/ })[2]);
+
+		expect(gameMocks.ban).toHaveBeenCalledWith(3);
+	});
+
+	it('shows "Banned by <name>" on a problem another player banned', () => {
+		configureBanning({ problemPool: poolWithGraceBan });
+		render(<GamePage />);
+
+		expect(screen.getByText(/Banned by/).textContent).toContain('Grace');
+	});
+
+	it('shows "1 of 4 bans made" with four players and one ban made', () => {
+		configureBanning({ players: fourPlayers, problemPool: poolWithGraceBan });
+		render(<GamePage />);
+
+		expect(screen.getByText('1 of 4 bans made')).toBeTruthy();
+	});
+
+	it('shows four ban markers with four players', () => {
+		configureBanning({ players: fourPlayers });
+		const { container } = render(<GamePage />);
+
+		// One marker per player, filled or not.
+		expect(container.querySelectorAll('[data-seat]')).toHaveLength(4);
 	});
 });

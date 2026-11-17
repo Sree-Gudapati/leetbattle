@@ -15,22 +15,33 @@ export interface GamePlayer {
 	left: boolean; // didn't reconnect within the window
 }
 
+// The player who banned a problem during the ban phase.
+export interface Banner {
+	userId: string;
+	displayName: string;
+	team: TeamId;
+}
+
 // One problem in the match pool: enough to list it, and its question_id to
-// load the full problem from CodeService.
+// load the full problem from CodeService. topics are all the ban screen shows.
 export interface PoolProblem {
 	taskId: string;
 	questionId: number;
 	difficulty: string;
+	topics: string[];
+	bannedBy: Banner | null; // null until a player bans it
 }
 
 // What GameService sends on `game:state`: the whole match, re-sent whenever
-// something about it changes (a player connecting or dropping, for now).
+// something about it changes (a player connecting or dropping, a ban, ...).
 export interface GameState {
 	gameId: string;
 	// waiting: players are still connecting, the clock hasn't started
-	phase: 'waiting' | 'playing';
+	// banning: every player bans one problem; the clock starts once bans are in
+	phase: 'waiting' | 'banning' | 'playing';
 	startedAt: number | null;
 	secondsRemaining: number;
+	banSecondsRemaining: number; // seconds left in the ban window
 	scores: Record<TeamId, number>;
 	problemPool: PoolProblem[];
 	players: GamePlayer[];
@@ -58,6 +69,8 @@ interface GameSocketContextValue {
 	// Votes for the player's team to forfeit; the team forfeits once every
 	// connected teammate has voted.
 	forfeit: () => void;
+	// Bans one problem from the pool during the ban phase.
+	ban: (_questionId: number) => void;
 	clearError: () => void;
 }
 
@@ -128,9 +141,13 @@ export function GameSocketProvider({ children }: { children: ReactNode }) {
 		socketRef.current?.socket.emit('game:forfeit');
 	}, []);
 
+	const ban = useCallback((questionId: number) => {
+		socketRef.current?.socket.emit('game:ban', { questionId });
+	}, []);
+
 	const clearError = useCallback(() => setError(null), []);
 	return (
-		<GameSocketContext.Provider value={{ socket, connected, game, result, error, connect, forfeit, clearError }}>
+		<GameSocketContext.Provider value={{ socket, connected, game, result, error, connect, forfeit, ban, clearError }}>
 			{children}
 		</GameSocketContext.Provider>
 	);

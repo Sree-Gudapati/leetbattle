@@ -11,6 +11,7 @@ import type { TeamId } from '../../lobby/socket-context';
 import { DIFFICULTY_STYLES, titleFromTaskId } from '../../editor/components/question-panel';
 import { APIService } from '../../editor/controller';
 import type { Problem } from '../../editor/controller';
+import BanScreen from '../components/ban-screen';
 import { GameSocketProvider, useGameSocket } from '../socket-context';
 import type { GamePlayer, GameResult, PoolProblem } from '../socket-context';
 
@@ -173,9 +174,10 @@ function ResultScreen({ result }: { result: GameResult }) {
 function GameContent() {
 	const { gameId } = useParams<{ gameId: string }>();
 	const { user } = useAuth();
-	const { connected, game, result, error, connect, forfeit } = useGameSocket();
+	const { connected, game, result, error, connect, forfeit, ban } = useGameSocket();
 	const joined = connected && game !== null;
 	const playing = joined && game.phase === 'playing' && !result;
+	const banning = joined && game.phase === 'banning' && !result;
 
 	useEffect(() => {
 		connect(gameId);
@@ -195,7 +197,9 @@ function GameContent() {
 						{joined && !result && (
 							<div className="flex items-center gap-6">
 								<span className="font-mono text-sm font-semibold"><span className="text-primary">{game.scores.a}</span> – <span className="text-secondary">{game.scores.b}</span></span>
-								<Clock seconds={game.secondsRemaining} running={game.phase === 'playing'} />
+								{banning
+									? <span className="flex items-baseline gap-2"><span className="text-sm text-muted">Bans close in</span><Clock seconds={game.banSecondsRemaining} running /></span>
+									: <Clock seconds={game.secondsRemaining} running={game.phase === 'playing'} />}
 							</div>
 						)}
 					</div>
@@ -225,7 +229,9 @@ function GameContent() {
 								))}
 							</div>
 
-							<ProblemList problems={game.problemPool} />
+							{banning
+								? <BanScreen problems={game.problemPool} playerCount={game.players.length} onBan={ban} />
+								: <ProblemList problems={game.problemPool} />}
 						</>
 					)}
 				</div>

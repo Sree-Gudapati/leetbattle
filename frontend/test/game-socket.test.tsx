@@ -5,6 +5,8 @@
 // Game socket context should handle the end of the game
 //  - A "game:ended" event from the server should expose the result to the page
 //  - Forfeiting should send a "game:forfeit" event to the server
+// Game socket context should send bans
+//  - Banning should send a "game:ban" event with the questionId to the server
 import { useEffect } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen } from '@testing-library/react';
@@ -46,7 +48,7 @@ function fakeSocket() {
 
 // A minimal page: joins game-1 on mount and prints what the context exposes.
 function Consumer() {
-	const { connect, game, error, result, forfeit } = useGameSocket();
+	const { connect, game, error, result, forfeit, ban } = useGameSocket();
 	useEffect(() => {
 		connect('game-1');
 	}, [connect]);
@@ -56,6 +58,8 @@ function Consumer() {
 			<span data-testid="error">{error?.message ?? ''}</span>
 			<span data-testid="winner">{result?.winner ?? ''}</span>
 			<button onClick={forfeit}>Forfeit</button>
+			{/* Bans the problem with questionId 7. */}
+			<button onClick={() => ban(7)}>Ban</button>
 		</div>
 	);
 }
@@ -121,5 +125,13 @@ describe('game socket context', () => {
 		act(() => screen.getByRole('button', { name: 'Forfeit' }).click());
 
 		expect(fake.socket.emit).toHaveBeenCalledWith('game:forfeit');
+	});
+
+	it('sends game:ban with the questionId to the server when banning', () => {
+		renderConsumer();
+
+		act(() => screen.getByRole('button', { name: 'Ban' }).click());
+
+		expect(fake.socket.emit).toHaveBeenCalledWith('game:ban', { questionId: 7 });
 	});
 });

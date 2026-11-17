@@ -69,3 +69,51 @@
 
  // Game should still finish when saving its end fails
  //  - When the database can't save the end of the game, the players should still receive the result
+
+// ============================================================================
+// DRAFT (Claude, for review): ban phase. Edit / cut / reword before tests are written.
+// Rules agreed: every player bans one of the nine, the rest are played; a 30s
+// ban window, and anyone who hasn't banned when it runs out is skipped.
+// NOTE: this changes two existing tests above in "Game should wait for its players":
+//   "When every player has connected, the game should start playing"
+//   "When the join wait runs out, the game should start with whoever has connected"
+//   -> both should now move the game to "banning" instead (see first group below).
+// ============================================================================
+
+ // Game should hold a ban phase before the clock starts
+ //  - When every player has connected, the game should move to "banning"
+ //  - When the join wait runs out, the game should move to "banning" with whoever has connected
+ //  - While banning, the game state should show the full 20 minutes remaining
+ //  - While banning, the game state should include how many seconds are left to ban
+
+ // GameService socket should send each problem's topics for the ban screen
+ //  - Each problem in the match pool should carry its tags from CodeService as topics
+
+ // Players should be able to ban one problem each
+ //  - When a player bans a problem, the game state should show that problem as banned by that player
+ //  - The ban should carry the banning player's display name
+ //  - The ban should carry the banning player's team
+ //  - When a player bans, the other players should receive a game state showing the ban
+ //  - A player's second ban should be rejected with "already-banned"
+ //  - Banning a problem another player already banned should be rejected with "problem-banned"
+ //  - Banning a problem that isn't in the match pool should be rejected with "unknown-problem"
+ //  - Banning once play has started should be rejected with "not-banning"
+ //  - Submitting a solution during the ban phase should be rejected with "not-playing"
+
+ // Play should start once the bans are in
+ //  - When every player has banned, the game should start playing
+ //  - Once play starts, the match pool should only list the problems that weren't banned
+ //  - In a 3v3, six bans should leave three problems in play
+ //  - In a 1v1, two bans should leave seven problems in play
+ //  - When the ban window runs out, the game should start playing with the bans made so far
+ //  - When a player has left during the ban phase, the game should start once every remaining player has banned
+
+ // Game should give a player who drops during the ban phase time to reconnect
+ //  - When a player's socket drops during the ban phase, their reconnect window should start
+ //  - When every player on a team has left during the ban phase, the other team should win by disconnect
+
+ // Game should be won on the problems left in play
+ //  - When a team has solved every problem left after the bans, that team should win with reason "solved"
+
+ // (decide) Bans should be saved
+ //  - Once play starts, the game's saved problems (game_problems) should only be the ones left in play
