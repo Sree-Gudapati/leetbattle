@@ -52,7 +52,7 @@ export default function QuestionPanel() {
 					{currentQuestion.tags.map((tag) => (
 					<span
 						key={tag}
-						className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+						className="rounded-full bg-raised px-2 py-0.5 text-xs text-muted"
 					>
 						{tag}
 					</span>

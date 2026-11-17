@@ -1,32 +1,26 @@
 'use client';
 import { useEditor } from '../context';
 
-const DIFFICULTY_BORDER_STYLES: Record<string, string> = {
-	Easy: 'border-b-green-500',
-	Medium: 'border-b-yellow-500',
-	Hard: 'border-b-red-500',
-};
-
 export default function QuestionNavigation() {
 	const { currentQuestion, setCurrentQuestion, questions } = useEditor();
 
 	return (
-		<div className="flex w-full gap-3 overflow-y-auto pb-4 text-sm text-ink">
-			{questions.map((question, index) => (
-				<button
-					key={question.question_id}
-					onClick={() => setCurrentQuestion(question)}
-					className={`flex h-12 flex-1 items-center justify-center rounded-t-md border-b-4 text-sm font-medium transition-colors ${
-						DIFFICULTY_BORDER_STYLES[question.difficulty] ?? 'border-b-line'
-					} ${
-						question.question_id === currentQuestion?.question_id
-							? 'bg-line'
-							: 'bg-raised hover:bg-line'
-					}`}
-				>
-					{index + 1}
-				</button>
-			))}
+		<div className="mb-5 flex w-full gap-1 rounded-lg border border-line bg-surface p-1 text-sm">
+			{questions.map((question, index) => {
+				const selected = question.question_id === currentQuestion?.question_id;
+				return (
+					<button
+						key={question.question_id}
+						onClick={() => setCurrentQuestion(question)}
+						aria-current={selected ? 'true' : undefined}
+						className={`lb-press flex h-10 flex-1 items-center justify-center rounded-md font-medium ${
+							selected ? 'bg-raised font-bold text-primary' : 'text-muted hover:text-ink'
+						}`}
+					>
+						{index + 1}
+					</button>
+				);
+			})}
 		</div>
 	);
 }
