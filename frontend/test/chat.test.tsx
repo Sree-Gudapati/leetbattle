@@ -224,4 +224,15 @@ describe('sending comments over the game socket', () => {
 		// The event name and its { text } payload (anything after that is not checked here).
 		expect(fake.socket.emit.mock.calls[0].slice(0, 2)).toEqual(['chat:send', { text: 'Question 1 is done' }]);
 	});
+
+	it('US-3-T-2 does not show a sent comment until the server delivers it', async () => {
+		const user = userEvent.setup();
+		renderChatWithSocket();
+
+		await user.type(messageBox(), 'Question 1 is done');
+		await user.click(sendButton());
+
+		// The server has not sent chat:message back yet, so the panel is still empty.
+		expect(screen.getByText('No messages yet')).toBeTruthy();
+	});
 });
