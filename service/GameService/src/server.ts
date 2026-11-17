@@ -300,9 +300,11 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 
 		// Team chat (US-3-T-2): passes a player's message on to their own team,
 		// sender included. The team room comes from the server's roster, never the client.
-		socket.on('chat:send', (message: { text?: unknown }) => {
+		socket.on('chat:send', (message: { text?: unknown }, ack?: (_response: { error: string }) => void) => {
+			const reply = typeof ack === 'function' ? ack : () => undefined;
 			const text = message?.text;
-			if (typeof text !== 'string' || text.length > MAX_CHAT_LENGTH) return;
+			if (typeof text !== 'string') return;
+			if (text.length > MAX_CHAT_LENGTH) return reply({ error: 'Message too long' });
 			io.to(`${gameRoom(game)}:${player.team}`).emit('chat:message', {
 				id: randomUUID(),
 				userId: user.id,
