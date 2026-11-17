@@ -1,8 +1,17 @@
 import bcrypt from 'bcryptjs';
+import { createHash, randomBytes } from 'node:crypto';
 import { NextFunction, Request, Response } from 'express';
 import { pool } from './db';
 import { encryptJwe } from './utils/jwe';
 import { AuthedRequest } from './middleware';
+import { mailer } from './utils/mailer';
+
+const RESET_TOKEN_MINUTES = 30;
+
+// Only the hash of a reset token is stored, so a leaked table cannot be used to reset passwords.
+function hashResetToken(token: string): string {
+	return createHash('sha256').update(token).digest('hex');
+}
 
 interface UserRow {
 	id: string;
@@ -145,6 +154,71 @@ export async function updateAccount(req: AuthedRequest, res: Response, next: Nex
 			return;
 		}
 		res.json({ user: toPublicUser(user) });
+	} catch (err) {
+		next(err);
+	}
+}
+
+// Starts a password reset. Always answers the same way, whether or not the
+// email has an account, so the endpoint cannot be used to find registered emails.
+export async function forgotPassword(req: Request, res: Response, next: NextFunction) {
+	const { email } = req.body ?? {};
+	if (typeof email !== 'string' || !email.includes('@')) {
+		res.status(400).json({ error: 'a valid email is required' });
+		return;
+	}
+
+	try {
+		const result = await pool.query<UserRow>('SELECT * FROM users WHERE email = $1', [email]);
+		const user = result.rows[0];
+		if (user) {
+			const token = randomBytes(32).toString('hex');
+			// A new link replaces any earlier one for the same account.
+			await pool.query('DELETE FROM password_resets WHERE user_id = $1', [user.id]);
+			await pool.query(
+				`INSERT INTO password_resets (token_hash, user_id, expires_at)
+				 VALUES ($1, $2, now() + make_interval(mins => $3))`,
+				[hashResetToken(token), user.id, RESET_TOKEN_MINUTES],
+			);
+			const frontend = (process.env.FRONTEND_URL ?? 'http://localhost:3000').split(',')[0].trim();
+			// Not awaited, and a failure is only logged: a slow or failing email
+			// must not make this answer differ from the one for an unknown email.
+			void mailer.sendPasswordReset(user.email, `${frontend}/login/reset?token=${token}`).catch((err: unknown) => {
+				console.error('[auth-service] could not send password reset email', err);
+			});
+		}
+		res.json({ message: 'if an account exists for that email, a reset link has been sent' });
+	} catch (err) {
+		next(err);
+	}
+}
+
+// Finishes a password reset: the token from the emailed link buys one password change.
+export async function resetPassword(req: Request, res: Response, next: NextFunction) {
+	const { token, newPassword } = req.body ?? {};
+	if (typeof token !== 'string' || typeof newPassword !== 'string' || newPassword.length < 8) {
+		res.status(400).json({ error: 'a reset token and a new password of at least 8 characters are required' });
+		return;
+	}
+
+	try {
+		// One statement uses up the link and sets the password, so a failure
+		// cannot spend the link without changing the password. Deleting the
+		// row is what makes the link single-use.
+		const passwordHash = await bcrypt.hash(newPassword, 10);
+		const result = await pool.query(
+			`WITH used AS (
+				DELETE FROM password_resets WHERE token_hash = $1 AND expires_at > now() RETURNING user_id
+			 )
+			 UPDATE users SET password_hash = $2 FROM used WHERE users.id = used.user_id
+			 RETURNING users.id`,
+			[hashResetToken(token), passwordHash],
+		);
+		if (result.rows.length === 0) {
+			res.status(400).json({ error: 'this reset link is invalid or has expired' });
+			return;
+		}
+		res.json({ message: 'password has been changed' });
 	} catch (err) {
 		next(err);
 	}
