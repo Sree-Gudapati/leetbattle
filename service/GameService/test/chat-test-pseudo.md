@@ -21,7 +21,7 @@
  //  - The saved row should have the sender's team
  //  - The saved row should have the sender's user id
  //  - The saved row should have a sent time that is set
- //  - The saved row should have the message body under text
+ //  - The saved row should have the message body as text
  //  - A "chat:send" with text longer than 500 characters should not be saved to "team_messages"
 
  // GameService should not take chat messages after the game has ended
