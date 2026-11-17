@@ -62,6 +62,7 @@
 //  - Editing code should send it to the game (team-only relay), not to the lobby socket
 // US-3-T-2: The match page should show team chat while the game is being played
 //  - While playing, the match page should display a "Team chat" panel
+//  - Sending a comment on the match page should emit "chat:send" on the game socket
 //  (CodeService's fetch and Monaco are mocked; no test touches a backend service)
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -635,5 +636,20 @@ describe('game page team chat', () => {
 		render(<GamePage />);
 
 		expect(await screen.findByRole('region', { name: 'Team chat' })).toBeTruthy();
+	});
+
+	it('US-3-T-2 emits chat:send on the game socket when a comment is sent from the match page', async () => {
+		const user = userEvent.setup();
+		// Keep hold of the socket so the test can see what was emitted on it.
+		const socket = { connected: true, emit: vi.fn(), on: vi.fn(), off: vi.fn() };
+		configureGame({ socket, connected: true, game: gameState() });
+		render(<GamePage />);
+
+		await user.type(await screen.findByRole('textbox', { name: 'Message your team' }), 'Question 1 is done');
+		await user.click(screen.getByRole('button', { name: 'Send' }));
+
+		// The editor also sends game:code on this socket, so only chat:send is checked.
+		const chatSends = socket.emit.mock.calls.filter(([event]) => event === 'chat:send');
+		expect(chatSends.map((call) => call.slice(0, 2))).toEqual([['chat:send', { text: 'Question 1 is done' }]]);
 	});
 });
