@@ -4,6 +4,7 @@ LobbyService is its own Socket.IO, and joining the lobby requires a logged-in ac
 The user would have access to the home page after creating an account and logging in, and they can join a lobby, take one of six seats, choose either team, and see live updates as other players join the lobby.
 
 Each player can ready up after all six connected players have chosen teams. When everyone is ready, a five-second countdown begins and cancels if someone becomes unready or disconnects. At zero, LobbyService emits `lobby:ready-for-match`; the match service will handle creating and starting the actual match.
+- Update: LobbyService makes a direct call to GameService, and handles starting the match. LobbyService emits 'lobby:game-started' along with the gameId and closes the websocket.
 
 Lobby membership, display names, and team assignments are stored in the lobby_service Postgres database. Socket connection status and the 30-second reconnect grace period are kept in memory by LobbyService.
 
