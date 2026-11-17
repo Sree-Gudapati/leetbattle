@@ -286,4 +286,17 @@ describe('showing comments the server delivers', () => {
 
 		expect(screen.queryAllByText('Question 1 is done')).toHaveLength(1);
 	});
+
+	it('US-3-T-2 shows "Message too long" in the chat bar when chat:send is answered with it', async () => {
+		const user = userEvent.setup();
+		const fake = renderChatWithSocket();
+
+		await user.type(messageBox(), 'Question 1 is done');
+		await user.click(sendButton());
+		// GameService answers chat:send on its acknowledgement (the callback passed after the payload).
+		const answer = fake.socket.emit.mock.calls[0][2] as (_response: { error: string }) => void;
+		act(() => answer({ error: 'Message too long' }));
+
+		expect(screen.getByRole('alert').textContent).toBe('Message too long');
+	});
 });
