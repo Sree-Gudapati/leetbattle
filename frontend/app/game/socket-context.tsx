@@ -15,6 +15,14 @@ export interface GamePlayer {
 	left: boolean; // didn't reconnect within the window
 }
 
+// One problem in the match pool: enough to list it, and its question_id to
+// load the full problem from CodeService.
+export interface PoolProblem {
+	taskId: string;
+	questionId: number;
+	difficulty: string;
+}
+
 // What GameService sends on `game:state`: the whole match, re-sent whenever
 // something about it changes (a player connecting or dropping, for now).
 export interface GameState {
@@ -24,7 +32,7 @@ export interface GameState {
 	startedAt: number | null;
 	secondsRemaining: number;
 	scores: Record<TeamId, number>;
-	problemPool: string[];
+	problemPool: PoolProblem[];
 	players: GamePlayer[];
 	forfeitVotes: Record<TeamId, number>;
 }

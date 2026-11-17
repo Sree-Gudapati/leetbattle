@@ -45,3 +45,11 @@
  // Game socket context should handle the end of the game
  //  - A "game:ended" event from the server should expose the result to the page
  //  - Forfeiting should send a "game:forfeit" event to the server
+
+ // Game page should show each problem's details
+ //  - Each problem in the match pool should show its difficulty
+ //  - Before a problem is picked, no problem description should be shown
+ //  - Clicking a problem should load it from CodeService by its question_id
+ //  - Once loaded, the clicked problem's description should be displayed
+ //  - When the problem fails to load, an error should be displayed
+ //  (CodeService's fetch is mocked; no test calls a real service)

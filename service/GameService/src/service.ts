@@ -22,6 +22,15 @@ const startGameBodySchema = z.object({
 
 export type TeamId = 'a' | 'b';
 
+// One problem in a match's pool. game_problems saves only the task_id; the
+// question_id is what CodeService's GET /problem/:questionId looks it up by,
+// so the game page can load the full problem from the pool alone.
+export interface PoolProblem {
+	taskId: string;
+	questionId: number;
+	difficulty: string;
+}
+
 export interface GamePlayerState {
 	userId: string;
 	displayName: string;
@@ -41,7 +50,7 @@ export interface GameState {
 	startedAt: number | null; // Date.now() when play began; used to compute time remaining
 	scores: Record<TeamId, number>; // live counterpart of game.t1_score / t2_score
 	players: Map<string, GamePlayerState>; // keyed by userId
-	problemPool: string[]; // task_ids assigned to this game (game_problems)
+	problemPool: PoolProblem[]; // problems assigned to this game (task_ids saved in game_problems)
 	selections: Map<string, string>; // userId -> task_id currently being worked (player_selections)
 	forfeitVotes: Record<TeamId, Set<string>>; // userIds on each team who chose to forfeit
 	// Server-side timers driving the match - all owned by src/server.ts.
@@ -101,7 +110,7 @@ class HttpError extends Error {
 // draw from the same nine (see game_problems in sql/schema.sql).
 // Any failure here (an error status, or CodeService not answering at all)
 // becomes a 502, since it's an upstream problem rather than a bad request.
-async function fetchProblemPool(): Promise<string[]> {
+async function fetchProblemPool(): Promise<PoolProblem[]> {
 	const unavailable = new HttpError(502, 'could not load the problem pool from CodeService');
 	// The fetch Response, not Express's Response imported at the top of this file.
 	let responses: globalThis.Response[];
@@ -115,9 +124,13 @@ async function fetchProblemPool(): Promise<string[]> {
 	}
 	if (responses.some((response) => !response.ok)) throw unavailable;
 	const [easyProblems, mediumProblems] = await Promise.all(
-		responses.map((response) => response.json() as Promise<{ task_id: string }[]>),
+		responses.map((response) => response.json() as Promise<{ task_id: string; question_id: number; difficulty: string }[]>),
 	);
-	return [...easyProblems, ...mediumProblems].map((problem) => problem.task_id);
+	return [...easyProblems, ...mediumProblems].map((problem) => ({
+		taskId: problem.task_id,
+		questionId: problem.question_id,
+		difficulty: problem.difficulty,
+	}));
 }
 
 // Saves the game, its players, their teams and its problem pool in one
@@ -172,7 +185,7 @@ export async function createGame(req: Request, res: Response, next: NextFunction
 			players.map((player) => player.userId),
 			players.map((player) => player.displayName),
 			players.map((player) => player.team),
-			problemPool,
+			problemPool.map((problem) => problem.taskId),
 		]);
 		const gameId = gameResult.rows[0].game_id;
 

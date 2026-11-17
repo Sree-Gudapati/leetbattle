@@ -26,10 +26,17 @@
 //  - The result screen should have a "Back to lobby" link
 //  - When the game ends in a draw, "Draw" should be displayed
 //  - Once the game has ended, the Forfeit button should not be shown
+// Game page should show each problem's details
+//  - Each problem in the match pool should show its difficulty
+//  - Before a problem is picked, no problem description should be shown
+//  - Clicking a problem should load it from CodeService by its question_id
+//  - Once loaded, the clicked problem's description should be displayed
+//  - When the problem fails to load, an error should be displayed
+//  (CodeService's fetch is mocked; no test calls a real service)
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { fakeUser } from './helpers';
+import { fakeUser, jsonResponse, makeProblem, stubFetch } from './helpers';
 
 // Shared mocks. The game page never talks to GameService in these tests: the
 // auth context and the game socket context are replaced with fakes.
@@ -76,7 +83,16 @@ const roster: TestPlayer[] = [
 	player('u6', 'Margaret', 'b'),
 ];
 
-const problemPool = ['two-sum', 'valid-parentheses', 'best-time-to-buy-and-sell-stock'];
+// The pool as GameService sends it on `game:state`: just enough to list each
+// problem and to look it up in CodeService (by questionId) once it's clicked.
+const problemPool = [
+	{ taskId: 'two-sum', questionId: 1, difficulty: 'Easy' },
+	{ taskId: 'valid-parentheses', questionId: 2, difficulty: 'Easy' },
+	{ taskId: 'best-time-to-buy-and-sell-stock', questionId: 3, difficulty: 'Medium' },
+];
+
+// Matches the NEXT_PUBLIC_CODE_URL fallback in app/editor/controller.tsx.
+const CODE_URL = 'http://127.0.0.1:4001';
 
 // A freshly started match: full 20 minutes left, no score yet.
 function gameState(overrides: Record<string, unknown> = {}) {
@@ -116,6 +132,7 @@ function configureConnectedGame(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	vi.unstubAllGlobals();
 	configureGame();
 });
 
@@ -313,5 +330,72 @@ describe('game page result', () => {
 		render(<GamePage />);
 
 		expect(screen.queryByRole('button', { name: 'Forfeit' })).toBeNull();
+	});
+});
+
+describe('game page problem details', () => {
+	// Stands in for CodeService's GET /problem/:questionId: serves a full
+	// problem row for whichever question_id was asked for.
+	function stubProblemLookup() {
+		return stubFetch((url) => {
+			const questionId = Number(url.split('/').pop());
+			return jsonResponse(makeProblem(questionId, 'Easy'));
+		});
+	}
+
+	function problemButton(name: RegExp) {
+		return within(screen.getByRole('list', { name: 'Problems' })).getByRole('button', { name });
+	}
+
+	it('US-6-T-2 shows each problem\'s difficulty', () => {
+		configureConnectedGame();
+		render(<GamePage />);
+
+		// The pool is Easy, Easy, Medium.
+		const problems = screen.getByRole('list', { name: 'Problems' });
+		expect(within(problems).getAllByText('Easy')).toHaveLength(2);
+	});
+
+	it('US-6-T-2 shows no problem description before a problem is picked', () => {
+		stubProblemLookup();
+		configureConnectedGame();
+		render(<GamePage />);
+
+		expect(screen.queryByText(/Description for problem/)).toBeNull();
+	});
+
+	it('US-6-T-2 loads a clicked problem from CodeService by its question_id', async () => {
+		const user = userEvent.setup();
+		const fetchMock = stubProblemLookup();
+		configureConnectedGame();
+		render(<GamePage />);
+
+		await user.click(problemButton(/Valid Parentheses/));
+
+		// valid-parentheses has question_id 2 in the pool above.
+		expect(fetchMock).toHaveBeenCalledWith(`${CODE_URL}/problem/2`, expect.anything());
+	});
+
+	it('US-6-T-2 shows the clicked problem\'s description once it loads', async () => {
+		const user = userEvent.setup();
+		stubProblemLookup();
+		configureConnectedGame();
+		render(<GamePage />);
+
+		await user.click(problemButton(/Valid Parentheses/));
+
+		// makeProblem(2, ...) describes itself as "Description for problem 2".
+		expect(await screen.findByText('Description for problem 2')).toBeTruthy();
+	});
+
+	it('US-6-T-2 shows an error when the problem fails to load', async () => {
+		const user = userEvent.setup();
+		stubFetch(() => jsonResponse({ error: 'problem not found' }, 404));
+		configureConnectedGame();
+		render(<GamePage />);
+
+		await user.click(problemButton(/Two Sum/));
+
+		expect(await screen.findByText('Couldn\'t load this problem.')).toBeTruthy();
 	});
 });

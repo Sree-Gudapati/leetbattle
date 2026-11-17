@@ -25,13 +25,21 @@ export function sixReadyPlayers(): ReadyPlayer[] {
 }
 
 // Stands in for CodeService's GET /problem?difficulty=&quantity= endpoint.
-// Returns a plausible task_id-bearing problem array sized to whatever
-// `quantity` the caller asked for, regardless of difficulty, so createGame's
-// two calls (6 easy + 3 medium) both resolve with usable rows.
+// Returns plausible problem rows (task_id, question_id, difficulty) sized to
+// whatever `quantity` the caller asked for, labelled with the requested
+// difficulty, so createGame's two calls (6 easy + 3 medium) both resolve with
+// usable rows. question_ids count up from 1 across calls, so they stay unique.
 export function fakeCodeServiceFetch() {
+	let nextQuestionId = 1;
 	return vi.fn((url: string) => {
-		const quantity = Number(new URL(url).searchParams.get('quantity') ?? 0);
-		const problems = Array.from({ length: quantity }, (_, i) => ({ task_id: `${url}-${i}` }));
+		const params = new URL(url).searchParams;
+		const quantity = Number(params.get('quantity') ?? 0);
+		const difficulty = params.get('difficulty');
+		const problems = Array.from({ length: quantity }, (_, i) => ({
+			task_id: `${url}-${i}`,
+			question_id: nextQuestionId++,
+			difficulty,
+		}));
 		return Promise.resolve({
 			ok: true,
 			json: () => Promise.resolve(problems),

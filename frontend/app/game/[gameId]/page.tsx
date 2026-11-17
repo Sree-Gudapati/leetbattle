@@ -8,9 +8,11 @@ import { useAuth } from '../../login/context';
 import HomeTopBar from '../../_home/components/topbar';
 import PageLoader from '../../_shared/page-loader';
 import type { TeamId } from '../../lobby/socket-context';
-import { titleFromTaskId } from '../../editor/components/question-panel';
+import { DIFFICULTY_STYLES, titleFromTaskId } from '../../editor/components/question-panel';
+import { APIService } from '../../editor/controller';
+import type { Problem } from '../../editor/controller';
 import { GameSocketProvider, useGameSocket } from '../socket-context';
-import type { GamePlayer, GameResult } from '../socket-context';
+import type { GamePlayer, GameResult, PoolProblem } from '../socket-context';
 
 const TEAMS: { id: TeamId; name: string; nameColor: string }[] = [
 	{ id: 'a', name: 'Team 1', nameColor: 'text-primary' },
@@ -107,6 +109,54 @@ function ForfeitControl({ onForfeit }: { onForfeit: () => void }) {
 	);
 }
 
+const api = new APIService();
+
+// The match's problems. Clicking one loads its full details from CodeService
+// (the pool from `game:state` carries only enough to list and look it up).
+function ProblemList({ problems }: { problems: PoolProblem[] }) {
+	const [selected, setSelected] = useState<number | null>(null);
+	const [problem, setProblem] = useState<Problem | null>(null);
+	const [failed, setFailed] = useState(false);
+
+	const select = (questionId: number) => {
+		setSelected(questionId);
+		setProblem(null);
+		setFailed(false);
+		api.getProblem(questionId)
+			.then(setProblem)
+			.catch(() => setFailed(true));
+	};
+
+	return (
+		<section className="flex flex-col gap-4 rounded-xl border border-line bg-surface p-5">
+			<h2 className="text-[20px] font-bold tracking-[-0.02em]">Problems</h2>
+			<ul className="flex flex-col gap-2" aria-label="Problems">
+				{problems.map((entry) => (
+					<li key={entry.taskId}>
+						<button
+							onClick={() => select(entry.questionId)}
+							aria-pressed={selected === entry.questionId}
+							className="flex w-full items-center justify-between gap-3 rounded-lg bg-page px-4 py-2 text-left text-[15px] font-medium hover:bg-raised aria-pressed:bg-raised"
+						>
+							<span>{titleFromTaskId(entry.taskId)}</span>
+							<span className={`text-xs font-medium ${DIFFICULTY_STYLES[entry.difficulty] ?? ''}`}>{entry.difficulty}</span>
+						</button>
+					</li>
+				))}
+			</ul>
+			{failed && <p className="text-sm text-danger">Couldn&apos;t load this problem.</p>}
+			{selected !== null && !problem && !failed && <p role="status" className="text-sm text-muted">Loading problem…</p>}
+			{problem && (
+				<article className="flex flex-col gap-2 rounded-lg bg-page p-4">
+					<h3 className="text-lg font-semibold">{problem.question_id}. {titleFromTaskId(problem.task_id)}</h3>
+					<p className="whitespace-pre-line text-sm leading-6 text-muted">{problem.problem_description}</p>
+				</article>
+			)}
+			<p className="text-xs text-muted">The shared team editor opens here once collaborative editing lands.</p>
+		</section>
+	);
+}
+
 function ResultScreen({ result }: { result: GameResult }) {
 	return (
 		<section className="flex flex-col items-start gap-4 rounded-xl border border-line bg-surface p-8">
@@ -174,15 +224,7 @@ function GameContent() {
 								))}
 							</div>
 
-							<section className="flex flex-col gap-4 rounded-xl border border-line bg-surface p-5">
-								<h2 className="text-[20px] font-bold tracking-[-0.02em]">Problems</h2>
-								<ul className="flex flex-col gap-2" aria-label="Problems">
-									{game.problemPool.map((taskId) => (
-										<li key={taskId} className="rounded-lg bg-page px-4 py-2 text-[15px] font-medium">{titleFromTaskId(taskId)}</li>
-									))}
-								</ul>
-								<p className="text-xs text-muted">The shared team editor opens here once collaborative editing lands.</p>
-							</section>
+							<ProblemList problems={game.problemPool} />
 						</>
 					)}
 				</div>

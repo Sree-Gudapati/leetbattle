@@ -31,6 +31,10 @@
 //  - Once the game ends, the players' sockets should be closed
 //  - Once the game ends, connecting to it should be rejected with "not-in-game"
 //  - Once the game ends, the players should no longer have an active game
+// GameService socket should send enough about each problem for the game page to load it
+//  - Each problem in the match pool should carry its task_id
+//  - Each problem in the match pool should carry the question_id CodeService looks problems up by
+//  - Each problem in the match pool should carry its difficulty
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EncryptJWT } from 'jose';
@@ -50,7 +54,7 @@ interface GameStatePayload {
 	gameId: string;
 	phase: 'waiting' | 'playing';
 	secondsRemaining: number;
-	problemPool: string[];
+	problemPool: { taskId: string; questionId: number; difficulty: string }[];
 	players: { userId: string; team: 'a' | 'b'; connected: boolean; left: boolean }[];
 	forfeitVotes: Record<'a' | 'b', number>;
 }
@@ -383,5 +387,32 @@ describe('after the game ends', () => {
 		const { game } = await forfeitedGame();
 		const res = await request.get(`/game/${game.players[0].userId}`);
 		expect(res.status).toBe(404);
+	});
+});
+
+// The game page lists the pool from `game:state` alone, then loads a problem's
+// full details from CodeService's GET /problem/:questionId - so each entry has
+// to carry the question_id, not just the task_id saved in game_problems.
+// fakeCodeServiceFetch (test/fixtures.ts) numbers its problems' question_ids
+// from 1 and labels each with the difficulty that was asked for.
+describe('problem details in the game state', () => {
+	it('gives each problem in the pool its task_id', async () => {
+		const { state } = await joinGame(players[0].userId);
+		// Every one of the nine entries has a task_id string.
+		expect(state.problemPool.filter((problem) => typeof problem.taskId === 'string')).toHaveLength(9);
+	});
+
+	it('gives each problem in the pool the question_id CodeService looks it up by', async () => {
+		const { state } = await joinGame(players[0].userId);
+		// Every one of the nine entries has a numeric question_id.
+		expect(state.problemPool.filter((problem) => typeof problem.questionId === 'number')).toHaveLength(9);
+	});
+
+	it('gives each problem in the pool its difficulty', async () => {
+		const { state } = await joinGame(players[0].userId);
+		// The pool is 6 Easy + 3 Medium, so the difficulties show up in that order.
+		expect(state.problemPool.map((problem) => problem.difficulty)).toEqual([
+			'Easy', 'Easy', 'Easy', 'Easy', 'Easy', 'Easy', 'Medium', 'Medium', 'Medium',
+		]);
 	});
 });

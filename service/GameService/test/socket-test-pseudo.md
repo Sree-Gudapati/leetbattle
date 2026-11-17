@@ -38,3 +38,8 @@
  //  - Once the game ends, the players' sockets should be closed
  //  - Once the game ends, connecting to it should be rejected with "not-in-game"
  //  - Once the game ends, the players should no longer have an active game
+
+ // GameService socket should send enough about each problem for the game page to load it
+ //  - Each problem in the match pool should carry its task_id
+ //  - Each problem in the match pool should carry the question_id CodeService looks problems up by
+ //  - Each problem in the match pool should carry its difficulty
