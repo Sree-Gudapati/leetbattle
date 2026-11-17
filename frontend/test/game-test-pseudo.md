@@ -85,3 +85,24 @@
 // show each problem's details" above, which were removed with the list)
  //  - While the game is waiting for players, no question name should be displayed
  //  - While the game is playing, the "Problems" list should not be displayed
+
+// US-6-T-6: Once the bans are in, the game page should show the practice editor
+ //  - While the game is playing, the code editor should be displayed
+ //  - While the game is banning, the code editor should not be displayed
+ //  - While the game is waiting for players, the code editor should not be displayed
+ //  - The editor should have one question tab per problem left after the bans
+ //  - The editor should load each problem left in play from CodeService by its question_id
+ // Submitting in a match should go through the game
+ //  - Clicking "Submit" should submit the current question's id and code to the game
+ //  - The game's grading result should be shown in the results panel
+ //  - When the game refuses a submission with "cooldown", a readable message should be shown
+ // Running code in a match should work like practice
+ //  - Clicking "Run" should run the code against CodeService
+ // A player's code should only go to their own team
+ //  - Editing code should send it to the game (team-only relay), not to the lobby socket
+ // Game socket context
+ //  - Submitting should emit "game:submit" with the question id and code and resolve with the grading
+ //  - A refused submission should reject with a readable message
+ //  - Sharing code should emit "game:code" with the question id and workspace
+ // The practice editor should keep working outside a match
+ //  - Opening /editor should still load random practice problems

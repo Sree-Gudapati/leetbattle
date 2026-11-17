@@ -46,10 +46,25 @@
 // US-6-T-5: The game page should not list the match's questions
 //  - While the game is waiting for players, no question name should be displayed
 //  - While the game is playing, the "Problems" list should not be displayed
+// US-6-T-6: Once the bans are in, the game page should show the practice editor
+//  - While the game is playing, the code editor should be displayed
+//  - While the game is banning, the code editor should not be displayed
+//  - While the game is waiting for players, the code editor should not be displayed
+//  - The editor should have one question tab per problem left after the bans
+//  - The editor should load each problem left in play from CodeService by its question_id
+// Submitting in a match should go through the game
+//  - Clicking "Submit" should submit the current question's id and code to the game
+//  - The game's grading result should be shown in the results panel
+//  - When the game refuses a submission with "cooldown", a readable message should be shown
+// Running code in a match should work like practice
+//  - Clicking "Run" should run the code against CodeService
+// A player's code should only go to their own team
+//  - Editing code should send it to the game (team-only relay), not to the lobby socket
+//  (CodeService's fetch and Monaco are mocked; no test touches a backend service)
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { fakeUser } from './helpers';
+import { fakeUser, jsonResponse, makeProblem, requestsOf, stubFetch } from './helpers';
 
 // Shared mocks. The game page never talks to GameService in these tests: the
 // auth context and the game socket context are replaced with fakes.
@@ -59,7 +74,20 @@ const gameMocks = vi.hoisted(() => ({
 	clearError: vi.fn(),
 	forfeit: vi.fn(),
 	ban: vi.fn(),
+	submit: vi.fn(),
+	shareCode: vi.fn(),
+	// socket.io-client's io(): the editor must never open a lobby socket in a match.
+	io: vi.fn(),
 }));
+
+// Monaco needs a real browser; swap it for a textarea with the same contract
+// (controlled `value`, `onChange(value)`), as the practice editor tests do.
+vi.mock('@monaco-editor/react', () => ({
+	default: ({ value, onChange }: { value: string; onChange: (_v: string) => void }) => (
+		<textarea data-testid="monaco" value={value} onChange={(e) => onChange(e.target.value)} />
+	),
+}));
+vi.mock('socket.io-client', () => ({ io: (...args: unknown[]) => gameMocks.io(...args) }));
 
 vi.mock('next/navigation', () => ({
 	useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
@@ -133,6 +161,8 @@ function configureGame(context: Record<string, unknown> = {}) {
 		clearError: gameMocks.clearError,
 		forfeit: gameMocks.forfeit,
 		ban: gameMocks.ban,
+		submit: gameMocks.submit,
+		shareCode: gameMocks.shareCode,
 		...context,
 	});
 }
@@ -142,9 +172,27 @@ function configureConnectedGame(overrides: Record<string, unknown> = {}) {
 	configureGame({ socket: { connected: true, emit: vi.fn() }, connected: true, game: gameState(overrides) });
 }
 
+// Matches the NEXT_PUBLIC_CODE_URL fallback in app/editor/controller.tsx.
+const CODE_URL = 'http://127.0.0.1:4001';
+
+// Stands in for CodeService: GET /problem/:questionId serves a full problem
+// for whichever question_id was asked for; POST /solution (Run) answers one
+// passing case.
+function stubCodeService() {
+	return stubFetch((url, init) => {
+		if (url === `${CODE_URL}/solution` && init?.method === 'POST') {
+			return jsonResponse([{ verdict: 'Accepted', expected: '1', response: '1' }]);
+		}
+		return jsonResponse(makeProblem(Number(url.split('/').pop()), 'Easy'));
+	});
+}
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	vi.unstubAllGlobals();
+	// Every test gets a fake CodeService, so a playing game's editor never
+	// reaches a real one.
+	stubCodeService();
 	configureGame();
 });
 
@@ -466,5 +514,115 @@ describe('game page during the ban phase', () => {
 
 		// One marker per player, filled or not.
 		expect(container.querySelectorAll('[data-seat]')).toHaveLength(4);
+	});
+});
+
+describe('game page editor after the bans', () => {
+	// makeProblem(1, ...) titles itself "1. Problem Number 1" once loaded.
+	async function renderPlayingGame() {
+		configureConnectedGame();
+		render(<GamePage />);
+		await screen.findByRole('heading', { name: /1\. Problem Number 1/ });
+	}
+
+	// The game's grading for an accepted solution (CodeService's POST /solution/:questionId shape).
+	const accepted = { verdict: 'Accepted', passed: 3, total: 3, case: null, expected: null, response: null };
+
+	it('US-6-T-6 shows the code editor while the game is playing', async () => {
+		configureConnectedGame();
+		render(<GamePage />);
+
+		expect(await screen.findByTestId('monaco')).toBeTruthy();
+	});
+
+	it('US-6-T-6 does not show the code editor while the game is banning', () => {
+		const banPool = problemPool.map((entry) => ({ ...entry, topics: ['Array'], bannedBy: null }));
+		configureConnectedGame({ phase: 'banning', banSecondsRemaining: 25, problemPool: banPool });
+		render(<GamePage />);
+
+		expect(screen.queryByTestId('monaco')).toBeNull();
+	});
+
+	it('US-6-T-6 does not show the code editor while waiting for players', () => {
+		configureConnectedGame({ phase: 'waiting' });
+		render(<GamePage />);
+
+		expect(screen.queryByTestId('monaco')).toBeNull();
+	});
+
+	it('US-6-T-6 gives the editor one question tab per problem left after the bans', async () => {
+		await renderPlayingGame();
+
+		// The mocked pool has three problems left, so the question tabs are 1, 2 and 3.
+		expect(screen.getAllByRole('button', { name: /^\d+$/ }).map((tab) => tab.textContent)).toEqual(['1', '2', '3']);
+	});
+
+	it('US-6-T-6 loads each problem left in play from CodeService by its question_id', async () => {
+		const fetchMock = stubCodeService();
+		await renderPlayingGame();
+
+		// The pool's question_ids are 1, 2 and 3.
+		expect(requestsOf(fetchMock).map((request) => request.url))
+			.toEqual([`${CODE_URL}/problem/1`, `${CODE_URL}/problem/2`, `${CODE_URL}/problem/3`]);
+	});
+
+	it('US-6-T-6 submits the current question\'s id and code to the game', async () => {
+		gameMocks.submit.mockResolvedValue(accepted);
+		await renderPlayingGame();
+
+		fireEvent.change(screen.getByTestId('monaco'), { target: { value: 'print(1)' } });
+		await userEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+		expect(gameMocks.submit).toHaveBeenCalledWith(1, 'print(1)');
+	});
+
+	it('US-6-T-6 shows the game\'s grading result in the results panel', async () => {
+		gameMocks.submit.mockResolvedValue(accepted);
+		await renderPlayingGame();
+
+		await userEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+		expect(await screen.findByText('Passed: 3 / 3')).toBeTruthy();
+	});
+
+	it('US-6-T-6 shows a readable message when the game refuses a submission', async () => {
+		// The game socket context turns the "cooldown" refusal into this message.
+		gameMocks.submit.mockRejectedValue(new Error('Your team just submitted. Wait a few seconds before submitting again.'));
+		await renderPlayingGame();
+
+		await userEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+		expect(await screen.findByText('Your team just submitted. Wait a few seconds before submitting again.')).toBeTruthy();
+	});
+
+	it('US-6-T-6 runs the code against CodeService like practice', async () => {
+		const fetchMock = stubCodeService();
+		await renderPlayingGame();
+
+		await userEvent.click(screen.getByRole('button', { name: 'Run' }));
+
+		// Run goes straight to CodeService's POST /solution, as in practice.
+		await waitFor(() => expect(requestsOf(fetchMock).some((request) => request.url === `${CODE_URL}/solution` && request.method === 'POST')).toBe(true));
+	});
+
+	it('US-6-T-6 sends edited code to the game for the player\'s team', async () => {
+		await renderPlayingGame();
+
+		fireEvent.change(screen.getByTestId('monaco'), { target: { value: 'print(1)' } });
+
+		// Sent for question 1 with the edited code in its open tab (debounced, so wait for it).
+		await waitFor(() => expect(gameMocks.shareCode).toHaveBeenCalledWith(1, expect.objectContaining({
+			tabs: [expect.objectContaining({ code: 'print(1)' })],
+		})));
+	});
+
+	it('US-6-T-6 never opens a lobby socket for the editor in a match', async () => {
+		await renderPlayingGame();
+
+		fireEvent.change(screen.getByTestId('monaco'), { target: { value: 'print(1)' } });
+		await waitFor(() => expect(gameMocks.shareCode).toHaveBeenCalled());
+
+		// Code only leaves through the game (team-only); the lobby socket would reach both teams.
+		expect(gameMocks.io).not.toHaveBeenCalled();
 	});
 });

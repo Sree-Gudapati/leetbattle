@@ -16,6 +16,8 @@
 //  - After a failed Submit the page shows the users's output
 // Run should display its result (all following tests should be done by taking a fake POST /solution)
 //	- The page shows one verdict for each test case in its respective Case 1, Case 2, Case 3 tabs. 
+// US-6-T-6: The practice editor should keep working outside a match
+//  - Opening /editor should still load random practice problems
 
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -85,6 +87,12 @@ describe('editor page', () => {
 		render(<EditorPage />);
 		expect(screen.getByText('Loading question...')).toBeTruthy();
 		expect(await screen.findByText('Description for problem 1')).toBeTruthy();
+	});
+
+	it('US-6-T-6 still loads random practice problems from GET /problem', async () => {
+		const fetchMock = await renderLoadedEditor();
+		// Practice asks CodeService for a random set, not for specific question_ids.
+		expect(requestsOf(fetchMock)[0].url).toBe(`${CODE_URL}/problem`);
 	});
 
 	it('shows an error message when problems fail to load', async () => {
