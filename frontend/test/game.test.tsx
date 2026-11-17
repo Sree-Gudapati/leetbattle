@@ -8,7 +8,6 @@
 //  - Each player's display name should be rendered
 //  - Team 1 should list its three players
 //  - A player who is not connected should display "Reconnecting…"
-//  - Each problem in the match pool should be listed
 //  - The time remaining should be displayed as minutes and seconds
 // Game page should show the match waiting for its players
 //  - While the game is waiting with 2 of 6 players connected, "Waiting for players (2/6)" should be displayed
@@ -26,13 +25,9 @@
 //  - The result screen should have a "Back to lobby" link
 //  - When the game ends in a draw, "Draw" should be displayed
 //  - Once the game has ended, the Forfeit button should not be shown
-// Game page should show each problem's details
-//  - Each problem in the match pool should show its difficulty
-//  - Before a problem is picked, no problem description should be shown
-//  - Clicking a problem should load it from CodeService by its question_id
-//  - Once loaded, the clicked problem's description should be displayed
-//  - When the problem fails to load, an error should be displayed
-//  (CodeService's fetch is mocked; no test calls a real service)
+// (The "Each problem in the match pool should be listed" and "Game page should
+// show each problem's details" tests were removed by US-6-T-5: the game page no
+// longer lists the match's questions.)
 // Game page should show a win by solving every problem
 //  - When the game was won by solving every problem, "by solving every problem" should be displayed
 // Game page should show the ban screen during the ban phase
@@ -48,10 +43,13 @@
 //  - With four players and one ban made, "1 of 4 bans made" should be displayed
 //  - With four players, the ban screen should display four ban markers
 //  (all socket traffic is mocked; no test touches GameService)
+// US-6-T-5: The game page should not list the match's questions
+//  - While the game is waiting for players, no question name should be displayed
+//  - While the game is playing, the "Problems" list should not be displayed
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { fakeUser, jsonResponse, makeProblem, stubFetch } from './helpers';
+import { fakeUser } from './helpers';
 
 // Shared mocks. The game page never talks to GameService in these tests: the
 // auth context and the game socket context are replaced with fakes.
@@ -106,9 +104,6 @@ const problemPool = [
 	{ taskId: 'valid-parentheses', questionId: 2, difficulty: 'Easy' },
 	{ taskId: 'best-time-to-buy-and-sell-stock', questionId: 3, difficulty: 'Medium' },
 ];
-
-// Matches the NEXT_PUBLIC_CODE_URL fallback in app/editor/controller.tsx.
-const CODE_URL = 'http://127.0.0.1:4001';
 
 // A freshly started match: full 20 minutes left, no score yet.
 function gameState(overrides: Record<string, unknown> = {}) {
@@ -209,14 +204,6 @@ describe('game page match view', () => {
 
 		// Only Alan dropped, so exactly one row shows the reconnecting label.
 		expect(screen.getAllByText('Reconnecting…')).toHaveLength(1);
-	});
-
-	it('US-6-T-2 lists each problem in the match pool', () => {
-		configureConnectedGame();
-		render(<GamePage />);
-
-		const problems = screen.getByRole('list', { name: 'Problems' });
-		expect(within(problems).getAllByRole('listitem')).toHaveLength(3);
 	});
 
 	it('US-6-T-2 shows the time remaining as minutes and seconds', () => {
@@ -357,70 +344,20 @@ describe('game page result', () => {
 	});
 });
 
-describe('game page problem details', () => {
-	// Stands in for CodeService's GET /problem/:questionId: serves a full
-	// problem row for whichever question_id was asked for.
-	function stubProblemLookup() {
-		return stubFetch((url) => {
-			const questionId = Number(url.split('/').pop());
-			return jsonResponse(makeProblem(questionId, 'Easy'));
-		});
-	}
-
-	function problemButton(name: RegExp) {
-		return within(screen.getByRole('list', { name: 'Problems' })).getByRole('button', { name });
-	}
-
-	it('US-6-T-2 shows each problem\'s difficulty', () => {
-		configureConnectedGame();
+describe('game page without the question list', () => {
+	it('US-6-T-5 shows no question name while waiting for players', () => {
+		configureConnectedGame({ phase: 'waiting' });
 		render(<GamePage />);
 
-		// The pool is Easy, Easy, Medium.
-		const problems = screen.getByRole('list', { name: 'Problems' });
-		expect(within(problems).getAllByText('Easy')).toHaveLength(2);
+		// "Two Sum" is the first problem in the mocked pool; its name must not appear.
+		expect(screen.queryByText(/Two Sum/)).toBeNull();
 	});
 
-	it('US-6-T-2 shows no problem description before a problem is picked', () => {
-		stubProblemLookup();
+	it('US-6-T-5 does not show the "Problems" list while playing', () => {
 		configureConnectedGame();
 		render(<GamePage />);
 
-		expect(screen.queryByText(/Description for problem/)).toBeNull();
-	});
-
-	it('US-6-T-2 loads a clicked problem from CodeService by its question_id', async () => {
-		const user = userEvent.setup();
-		const fetchMock = stubProblemLookup();
-		configureConnectedGame();
-		render(<GamePage />);
-
-		await user.click(problemButton(/Valid Parentheses/));
-
-		// valid-parentheses has question_id 2 in the pool above.
-		expect(fetchMock).toHaveBeenCalledWith(`${CODE_URL}/problem/2`, expect.anything());
-	});
-
-	it('US-6-T-2 shows the clicked problem\'s description once it loads', async () => {
-		const user = userEvent.setup();
-		stubProblemLookup();
-		configureConnectedGame();
-		render(<GamePage />);
-
-		await user.click(problemButton(/Valid Parentheses/));
-
-		// makeProblem(2, ...) describes itself as "Description for problem 2".
-		expect(await screen.findByText('Description for problem 2')).toBeTruthy();
-	});
-
-	it('US-6-T-2 shows an error when the problem fails to load', async () => {
-		const user = userEvent.setup();
-		stubFetch(() => jsonResponse({ error: 'problem not found' }, 404));
-		configureConnectedGame();
-		render(<GamePage />);
-
-		await user.click(problemButton(/Two Sum/));
-
-		expect(await screen.findByText('Couldn\'t load this problem.')).toBeTruthy();
+		expect(screen.queryByRole('list', { name: 'Problems' })).toBeNull();
 	});
 });
 
