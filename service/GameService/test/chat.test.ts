@@ -29,8 +29,7 @@
 //
 // GameService should keep chat separate between games
 //  - When two games are running, a "chat:send" in one game should not reach the players of the other game
-//
-// The rest of chat-test-pseudo.md is added one test at a time.
+//  - The saved "team_messages" row should have the id of the game the message was sent in
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EncryptJWT } from 'jose';
 import { io } from 'socket.io-client';
@@ -350,6 +349,16 @@ describe('team chat with two games running', () => {
 		await teammate;
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		expect(otherGame).toEqual([]);
+	});
+
+	it('saves the id of the game the message was sent in', async () => {
+		const other = await secondGame();
+		// Sent in the second game this time, so a row saved under the test's game would show up.
+		const teammate = nextEvent<ChatMessage>(other.sockets[1], 'chat:message');
+		other.sockets[0].emit('chat:send', { text: 'hello team' });
+		const { id } = await teammate;
+		const { rows } = await pool.query<TeamMessageRow>('SELECT * FROM team_messages WHERE id = $1', [id]);
+		expect(rows[0].game_id).toBe(other.gameId);
 	});
 
 	it('does not save a chat:send sent after game:ended', async () => {
