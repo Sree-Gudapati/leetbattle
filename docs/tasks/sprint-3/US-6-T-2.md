@@ -26,9 +26,9 @@ Same as title, these need to be done
 - Create a victory screen once one team finishes all the problems
 - Handle disconnections in the way stated above
 - Add forfeit button to the left of the options button in the AppBar
-- Define a set of colors of each player of a team (randomly chosen at the start of the match)
-    - If more than one user's carets are in the monaco editor, color the caret with their color and show their username above the caret
-    - Add a TopBar Avatar stack, users dont have PFPs so make a circle with the first character in each of each spaced word in their username
+
+## Related specs
+- US-6-T-3 (player colors, carets, and avatar stack) builds on the game start and shared editor from this spec.
 
 ## Acceptance criteria
 ## 1. Start the game when all players are ready
@@ -73,11 +73,10 @@ Same as title, these need to be done
 ### In game
 
 - **When** a player drops from the game socket, **then** the other players are notified, and the player has a reconnect window to rejoin (*confirm* the length).
-- **When** the player reconnects within the window, **then** they resume with their team's current progress and their assigned color intact.
+- **When** the player reconnects within the window, **then** they resume with their team's current progress intact.
 - **When** a reconnecting player's editor reconnects to the shared document, **then** it syncs to the current team document state without losing or duplicating text.
 - **When** the window expires, **then** the player is marked as having left. If their team has no remaining players, that team forfeits and the other team wins.
 - **When** all players disconnect, **then** the game is ended and cleaned up, and the GameService socket and shared documents are closed.
-- **When** a player disconnects, **then** their remote caret is removed from the editor for other players, and their avatar is removed from the avatar stack or shown as offline *(confirm)*.
 - **When** the editor connection drops but the game connection stays up (or the reverse), **then** the player sees a "reconnecting" indicator and edits made offline merge on reconnect *(confirm whether offline edits are supported)*.
 
 ## 5. Forfeit button
@@ -91,7 +90,7 @@ Same as title, these need to be done
 
 ## 6. Collaborative team editor (Yjs + y-monaco)
 
-**Background:** Monaco has no built-in multi-user editing, so teammates cannot currently edit the same code together. This section covers evaluating and adopting Yjs with y-monaco to provide shared editing, cursors, and selections.
+**Background:** Monaco has no built-in multi-user editing, so teammates cannot currently edit the same code together. This section covers evaluating and adopting Yjs with y-monaco.
 
 ### Spike
 
@@ -115,48 +114,10 @@ Same as title, these need to be done
 
 ### Presence (awareness)
 
-- Each player's presence (username, assigned color, cursor and selection) is shared through Yjs awareness.
+- Each player's presence (username, cursor and selection) is shared through Yjs awareness. Assigned colors are added to presence in US-6-T-3.
 - A player's presence is removed when they disconnect, within a few seconds.
-- Presence uses the server-assigned player color, so the color a player sees for a teammate matches the avatar stack.
 
-## 7. Player colors, editor carets, and avatar stack
-
-### Color assignment
-
-- **When** the match starts, **then** each player on a team is randomly assigned a color from a defined palette.
-- Within a team, no two players share a color. The palette has at least as many colors as the maximum team size *(confirm max team size)*.
-- Colors are assigned once, server-side, so every client sees the same color for the same player.
-- A player's color stays the same for the whole match, including after a reconnect.
-- Colors are not reassigned during the match when a player leaves.
-- Palette colors meet a minimum contrast ratio against the editor background *(confirm theme and ratio)*.
-- Whether colors may repeat across opposing teams is decided *(confirm)*.
-
-### Monaco editor carets
-
-- **Given** two or more users have carets in the same Monaco editor, **when** a remote user's caret is shown, **then** it is drawn in that user's assigned color.
-- Remote carets and selections are rendered through y-monaco's awareness support, with styles (caret color, selection highlight, label) generated per player from their assigned color.
-- The remote user's username is displayed above their caret.
-- The username label uses the same color as the caret (or a readable label with a matching accent) and stays legible against the editor background.
-- Remote carets and labels move in real time as the remote user moves their cursor or types.
-- A remote caret near the top edge of the editor keeps its username label visible instead of being clipped *(confirm)*.
-- The local user's own caret keeps the default Monaco style and gets no username label.
-- Carets only appear for teammates sharing the same document. Opposing-team carets are never sent or shown.
-- When a user is the only one in the editor, no username label is shown.
-- Usernames are rendered as text and never injected as raw HTML or unescaped CSS, so a malicious username cannot break styling or run script.
-
-### TopBar avatar stack
-
-- An avatar stack appears in the TopBar, showing the players in the game *(confirm: own team only, or all players)*.
-- Users have no profile pictures, so each avatar is a circle filled with the player's assigned color, containing initials.
-- Initials are the first character of each space-separated word in the username, in uppercase. "Ada Lovelace" shows "AL", and "grace" shows "G".
-- Extra spaces (leading, trailing, or repeated) are ignored, and an empty username shows a fallback character such as "?" *(confirm)*.
-- Initials are capped at a maximum length so they fit the circle *(confirm cap, e.g. 2 or 3)*.
-- Avatar text meets a minimum contrast ratio against the avatar color.
-- Avatars overlap in the stack in a consistent order. When there are more avatars than fit, the stack shows a "+N" overflow indicator *(confirm threshold)*.
-- Each avatar has an accessible label and a tooltip showing the full username.
-- The stack updates when a player joins, leaves, or disconnects.
-
-## 8. Frontend tests
+## 7. Frontend tests
 
 ### General
 
@@ -176,11 +137,3 @@ Same as title, these need to be done
 - Incoming mock socket events (ready, unready, join, leave) update the displayed statuses.
 - The current player's own status is shown correctly, and a player who leaves is removed from the list.
 - An empty lobby and a lobby with all players ready each render correctly.
-
-### Avatar stack and carets
-
-- An initials helper is unit-tested for single-word, multi-word, extra-space, lowercase, and empty usernames.
-- The avatar stack renders one avatar per player, each with the correct initials and background color.
-- The overflow indicator appears when there are more avatars than fit.
-- Given mocked awareness data, remote carets are rendered with the player's color and username label, and the local caret is not labeled. The Monaco editor is mocked or stubbed in these tests.
-- A username containing HTML or CSS characters is rendered as plain text.
