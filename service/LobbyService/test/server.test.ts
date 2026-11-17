@@ -1,9 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import { EncryptJWT } from 'jose';
 import { io } from 'socket.io-client';
 import type { Socket } from 'socket.io-client';
 import { createLobbyService } from '../src/server';
 import type { LobbySnapshot } from '../src/lobby-state';
+
+const GAME_SERVICE_URL = 'http://localhost:4004';
 
 const SECRET = 'local-test-secret-'.padEnd(64, 'x');
 let connectedClients: Socket[] = [];
@@ -181,6 +184,70 @@ describe('LobbyService socket lifecycle', () => {
 		player.disconnect();
 		expect((await afterExpiry).playerCount).toBe(0);
 	});
+});
+
+describe('Lobbyservice makes request to GameService', () => {
+	let gameServiceFetch: Mock;
+
+	// LobbyService's own tests never otherwise touch fetch - only this
+	// describe needs the stub, so it's scoped here rather than at the
+	// top-level beforeEach/afterEach that every other test shares.
+	beforeEach(() => {
+		gameServiceFetch = vi.fn(() => Promise.resolve({
+			ok: true,
+			json: () => Promise.resolve({ gameId: 'stub-game-id' }),
+		} as Response));
+		vi.stubGlobal('fetch', gameServiceFetch);
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	// 10s timeout: default (5000ms) is too tight for the flat 5000ms match
+	// countdown plus this test's connect/join/team-join setup - see the
+	// pre-existing 'enforces team capacity' test above, which hits the same
+	// ceiling on its own and is out of scope for this change.
+	it('makes a request with correct body', async () => {
+		// connect 6 players, split them 3/3 across teams, and ready them all
+		// up - mirrors the 'enforces team capacity' test's setup above, since
+		// that's the same condition that fires lobby:ready-for-match.
+		const clients = await Promise.all(Array.from({ length: 6 }, (_, index) => connectUser(`request-${index}`)));
+		for (const [index, client] of clients.entries()) {
+			await emitAndWaitForState(client, 'lobby:join', undefined, (state) => state.playerCount === index + 1);
+		}
+		for (const client of clients.slice(0, 3)) {
+			const userId = `request-${clients.indexOf(client)}`;
+			await emitAndWaitForState(client, 'lobby:join-team', 'a', (state) => state.players.find((player) => player.userId === userId)?.team === 'a');
+		}
+		for (const client of clients.slice(3, 6)) {
+			const userId = `request-${clients.indexOf(client)}`;
+			await emitAndWaitForState(client, 'lobby:join-team', 'b', (state) => state.players.find((player) => player.userId === userId)?.team === 'b');
+		}
+
+		// start a match: readying up all six players fires the same
+		// countdown -> lobby:ready-for-match path the test above exercises.
+		const readinessEvents = Promise.all(clients.map((client) => nextEvent(client, 'lobby:ready-for-match', 7_000)));
+		for (const [index, client] of clients.entries()) {
+			await emitAndWaitForState(client, 'lobby:set-ready', true, (state) => state.readyCount === index + 1);
+		}
+		await readinessEvents;
+
+		// should send a correct request to gameservice url with correct body
+		expect(gameServiceFetch).toHaveBeenCalledWith(
+			`${GAME_SERVICE_URL}/game`,
+			expect.objectContaining({
+				method: 'PUT',
+				body: JSON.stringify({
+					players: Array.from({ length: 6 }, (_, index) => ({
+						userId: `request-${index}`,
+						displayName: `Player request-${index}`,
+						team: index < 3 ? 'a' : 'b',
+					})),
+				}),
+			}),
+		);
+	}, 10_000);
 });
 
 function createUnauthenticatedClient(): Socket {

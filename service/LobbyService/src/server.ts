@@ -8,6 +8,7 @@ import type { TeamId } from './lobby-state';
 
 const LOBBY_ROOM = 'lobby:main';
 const MATCH_COUNTDOWN_MS = 5_000;
+const GAME_SERVICE_URL = process.env.GAME_SERVICE_URL ?? 'http://localhost:4004';
 
 interface UserData {
 	id: string;
@@ -77,9 +78,23 @@ export function createLobbyService(options: ServerOptions = {}) {
 				countdownStartedAt = null;
 				matchStarted = true;
 				emitLobbyState();
+				const readyPlayers = getLobby().snapshot().players;
 				io.to(LOBBY_ROOM).emit('lobby:ready-for-match', {
 					lobbyId: 'main',
-					players: getLobby().snapshot().players,
+					players: readyPlayers,
+				});
+				void fetch(`${GAME_SERVICE_URL}/game`, {
+					method: 'PUT',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						players: readyPlayers.map((player) => ({
+							userId: player.userId,
+							displayName: player.displayName,
+							team: player.team,
+						})),
+					}),
+				}).catch((error: unknown) => {
+					console.error('[lobby-service] failed to notify game-service of match start', error);
 				});
 			}, MATCH_COUNTDOWN_MS);
 		} else if (!getLobby().snapshot().readyToStart && countdownStartedAt !== null) {
