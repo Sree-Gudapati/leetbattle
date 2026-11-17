@@ -235,4 +235,15 @@ describe('sending comments over the game socket', () => {
 		// The server has not sent chat:message back yet, so the panel is still empty.
 		expect(screen.getByText('No messages yet')).toBeTruthy();
 	});
+
+	it('US-3-T-2 still shows a sent comment straight away when there is no game socket', async () => {
+		const user = userEvent.setup();
+		// No socket, as on the practice editor: chat stays on the page (the US-3-T-1 behaviour).
+		renderChat([]);
+
+		await user.type(messageBox(), 'Question 1 is done');
+		await user.click(sendButton());
+
+		expect(screen.getByText('Question 1 is done')).toBeTruthy();
+	});
 });
