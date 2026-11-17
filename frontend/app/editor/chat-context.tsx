@@ -16,6 +16,8 @@ export interface ChatMessage {
 export interface ChatContextValue {
 	messages: ChatMessage[];
 	send: (_text: string) => void;
+	// Why GameService refused the last message (e.g. "Message too long"), if it did.
+	error: string | null;
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
@@ -32,6 +34,7 @@ export function ChatProvider({
 }) {
 	const { user } = useAuth();
 	const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+	const [error, setError] = useState<string | null>(null);
 
 	// GameService sends each team message (the player's own included) as `chat:message`.
 	useEffect(() => {
@@ -46,7 +49,10 @@ export function ChatProvider({
 	const send = (text: string) => {
 		// Over the socket, the message only shows once GameService sends it back.
 		if (socket) {
-			socket.emit('chat:send', { text: text.trim() });
+			// GameService answers only to refuse a message, with { error }.
+			socket.emit('chat:send', { text: text.trim() }, (response?: { error?: string }) => {
+				if (response?.error) setError(response.error);
+			});
 			return;
 		}
 		setMessages((current) => [
@@ -60,7 +66,7 @@ export function ChatProvider({
 		]);
 	};
 
-	return <ChatContext.Provider value={{ messages, send }}>{children}</ChatContext.Provider>;
+	return <ChatContext.Provider value={{ messages, send, error }}>{children}</ChatContext.Provider>;
 }
 
 export function useTeamChat(): ChatContextValue {
