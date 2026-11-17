@@ -8,6 +8,8 @@ import { useAuth } from '../../login/context';
 import HomeTopBar from '../../_home/components/topbar';
 import PageLoader from '../../_shared/page-loader';
 import type { TeamId } from '../../lobby/socket-context';
+import { EditorProvider } from '../../editor/context';
+import EditorLayout from '../../editor/components/editor-layout';
 import BanScreen from '../components/ban-screen';
 import { GameSocketProvider, useGameSocket } from '../socket-context';
 import type { GamePlayer, GameResult } from '../socket-context';
@@ -123,7 +125,7 @@ function ResultScreen({ result }: { result: GameResult }) {
 function GameContent() {
 	const { gameId } = useParams<{ gameId: string }>();
 	const { user } = useAuth();
-	const { connected, game, result, error, connect, forfeit, ban } = useGameSocket();
+	const { connected, game, result, error, connect, forfeit, ban, submit, shareCode } = useGameSocket();
 	const joined = connected && game !== null;
 	const playing = joined && game.phase === 'playing' && !result;
 	const banning = joined && game.phase === 'banning' && !result;
@@ -179,6 +181,16 @@ function GameContent() {
 							</div>
 
 							{banning && <BanScreen problems={game.problemPool} playerCount={game.players.length} onBan={ban} />}
+
+							{/* The practice editor on the problems left after the bans. Each
+							    player has their own editor; their code only goes to their team. */}
+							{playing && (
+								<div className="overflow-hidden rounded-xl border border-line">
+									<EditorProvider questionIds={game.problemPool.map((problem) => problem.questionId)} submit={submit} shareCode={shareCode}>
+										<EditorLayout />
+									</EditorProvider>
+								</div>
+							)}
 						</>
 					)}
 				</div>

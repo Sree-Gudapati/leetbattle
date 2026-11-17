@@ -18,12 +18,14 @@ export interface EditorTab {
 	code: string;
 }
 
-interface EditorWorkspace {
+export interface EditorWorkspace {
 	tabs: EditorTab[];
 	activeTabId: string;
 }
 
 const EDITOR_WORKSPACE_EVENT = 'editor:workspace:update';
+// How long the editor waits after the last edit before sharing code in a match.
+const SHARE_CODE_DEBOUNCE_MS = 500;
 const LOBBY_URL = process.env.NEXT_PUBLIC_LOBBY_URL ?? 'http://localhost:4003';
 
 function createWorkspace(question: Problem): EditorWorkspace {
@@ -74,14 +76,30 @@ export interface EditorContextValue {
 	onSubmit: () => void;
 	runResult: RunResult | null;
 	submitResult: SubmitResult | null;
+	// Why a submission in a match was refused (e.g. the team cooldown).
+	submitError: string | null;
 	loadingAction: LoadingAction;
 	isLoading: boolean;
 }
 
+// Practice (/editor) passes none of these. In a match the game page passes all
+// three: the problems left after the bans, Submit through the game, and where
+// to send the player's code (their own team only, through GameService).
+interface EditorProviderProps {
+	children: ReactNode;
+	questionIds?: number[];
+	submit?: (_questionId: number, _code: string) => Promise<SubmitResult>;
+	shareCode?: (_questionId: number, _workspace: EditorWorkspace) => void;
+}
+
 const EditorContext = createContext<EditorContextValue | null>(null);
 
-export function EditorProvider({ children }: { children: ReactNode }) {
+export function EditorProvider({ children, questionIds, submit, shareCode }: EditorProviderProps) {
 	const { user } = useAuth();
+	const inMatch = questionIds !== undefined;
+	// The question_ids as a string, so a new array with the same ids (every
+	// game state) doesn't reload the problems.
+	const questionIdsKey = questionIds?.join(',');
 	const lobbySocket = useOptionalLobbySocket();
 	const [questions, setQuestions] = useState<Problem[]>([]);
 	const [currentQuestion, setCurrentQuestion] = useState<Problem | null>(null);
@@ -89,6 +107,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
 	const [error, setError] = useState<string | null>(null);
 	const [runResult, setRunResult] = useState<RunResult | null>(null);
 	const [submitResult, setSubmitResult] = useState<SubmitResult | null>(null);
+	const [submitError, setSubmitError] = useState<string | null>(null);
+	const shareTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	const [loadingAction, setLoadingAction] = useState<LoadingAction>(null);
 	const socketRef = useRef<Socket | null>(null);
 	const testCases = currentQuestion ? parseTestCases(currentQuestion.input_output) : [];
@@ -109,6 +129,9 @@ export function EditorProvider({ children }: { children: ReactNode }) {
 	}, []);
 
 	useEffect(() => {
+		// In a match, code only leaves through the game (to the player's own
+		// team); the lobby socket would reach both teams.
+		if (inMatch) return;
 		let socket = lobbySocket?.socket ?? null;
 		let ownsSocket = false;
 
@@ -135,14 +158,21 @@ export function EditorProvider({ children }: { children: ReactNode }) {
 			if (socketRef.current === socket) socketRef.current = null;
 			if (ownsSocket) socket.disconnect();
 		};
-	}, [applyRemoteWorkspace, lobbySocket?.connect, lobbySocket?.socket, user]);
+	}, [applyRemoteWorkspace, inMatch, lobbySocket?.connect, lobbySocket?.socket, user]);
 
 	const updateWorkspace = useCallback((nextWorkspace: EditorWorkspace) => {
 		if (!currentQuestion) return;
 		const questionId = currentQuestion.question_id;
 		setWorkspaces((current) => ({ ...current, [questionId]: nextWorkspace }));
+		if (shareCode) {
+			clearTimeout(shareTimer.current);
+			shareTimer.current = setTimeout(() => shareCode(questionId, nextWorkspace), SHARE_CODE_DEBOUNCE_MS);
+			return;
+		}
 		socketRef.current?.emit(EDITOR_WORKSPACE_EVENT, { questionId, workspace: nextWorkspace });
-	}, [currentQuestion]);
+	}, [currentQuestion, shareCode]);
+
+	useEffect(() => () => clearTimeout(shareTimer.current), []);
 
 	const setCode = useCallback((nextCode: string) => {
 		if (!currentQuestion || !activeTab) return;
@@ -203,14 +233,18 @@ export function EditorProvider({ children }: { children: ReactNode }) {
 
 	useEffect(() => {
 		const api = new APIService();
-		api
-			.generate()
+		// In a match: the problems left after the bans, in pool order. In
+		// practice: a random set.
+		const load = questionIdsKey === undefined
+			? api.generate()
+			: Promise.all(questionIdsKey.split(',').filter(Boolean).map((id) => api.getProblem(Number(id))));
+		load
 			.then((problems) => {
 				setQuestions(problems);
 				setCurrentQuestion(problems[0] ?? null);
 			})
 			.catch((err) => setError(err.message));
-	}, []);
+	}, [questionIdsKey]);
 
 	const onRun = () => {
 		if (!currentQuestion || loadingAction) {
@@ -230,11 +264,13 @@ export function EditorProvider({ children }: { children: ReactNode }) {
 			return;
 		}
 		setLoadingAction('submit');
+		setSubmitError(null);
 		const api = new APIService();
-		api
-			.submit(currentQuestion.question_id, code)
+		(submit ?? api.submit.bind(api))(currentQuestion.question_id, code)
 			.then(setSubmitResult)
-			.catch((err) => setError(err.message))
+			// A refused match submission is shown with the results; in practice a
+			// failure stays a page error, as before.
+			.catch((err) => (submit ? setSubmitError(err.message) : setError(err.message)))
 			.finally(() => setLoadingAction(null));
 	};
 
@@ -259,6 +295,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
 				onSubmit,
 				runResult,
 				submitResult,
+				submitError,
 				loadingAction,
 				isLoading: loadingAction !== null,
 			}}

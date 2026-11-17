@@ -7,7 +7,11 @@
 //  - Forfeiting should send a "game:forfeit" event to the server
 // Game socket context should send bans
 //  - Banning should send a "game:ban" event with the questionId to the server
-import { useEffect } from 'react';
+// US-6-T-6: Game socket context
+//  - Submitting should emit "game:submit" with the question id and code and resolve with the grading
+//  - A refused submission should reject with a readable message
+//  - Sharing code should emit "game:code" with the question id and workspace
+import { useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { fakeUser } from './helpers';
@@ -39,6 +43,9 @@ function fakeSocket() {
 		connect: vi.fn(),
 		disconnect: vi.fn(),
 		emit: vi.fn(),
+		// socket.timeout(ms).emitWithAck(...) — what the server answers is set per test.
+		emitWithAck: vi.fn(),
+		timeout: vi.fn(() => socket),
 	};
 	const fire = (event: string, payload?: unknown) => {
 		for (const handler of handlers.get(event) ?? []) handler(payload);
@@ -46,9 +53,13 @@ function fakeSocket() {
 	return { socket, fire };
 }
 
+// One editor for one question, as the practice editor keeps it.
+const WORKSPACE = { tabs: [{ id: 'tab-1', name: 'Tab 1', code: 'print(1)' }], activeTabId: 'tab-1' };
+
 // A minimal page: joins game-1 on mount and prints what the context exposes.
 function Consumer() {
-	const { connect, game, error, result, forfeit, ban } = useGameSocket();
+	const { connect, game, error, result, forfeit, ban, submit, shareCode } = useGameSocket();
+	const [submitted, setSubmitted] = useState('');
 	useEffect(() => {
 		connect('game-1');
 	}, [connect]);
@@ -60,6 +71,10 @@ function Consumer() {
 			<button onClick={forfeit}>Forfeit</button>
 			{/* Bans the problem with questionId 7. */}
 			<button onClick={() => ban(7)}>Ban</button>
+			{/* Submits code for question 3 and prints the verdict, or the refusal message. */}
+			<button onClick={() => submit(3, 'print(1)').then((grading) => setSubmitted(grading.verdict), (err: Error) => setSubmitted(err.message))}>Submit</button>
+			<span data-testid="submitted">{submitted}</span>
+			<button onClick={() => shareCode(3, WORKSPACE)}>Share</button>
 		</div>
 	);
 }
@@ -133,5 +148,40 @@ describe('game socket context', () => {
 		act(() => screen.getByRole('button', { name: 'Ban' }).click());
 
 		expect(fake.socket.emit).toHaveBeenCalledWith('game:ban', { questionId: 7 });
+	});
+
+	it('US-6-T-6 emits game:submit with the question id and code when submitting', () => {
+		fake.socket.emitWithAck.mockResolvedValue({ verdict: 'Accepted', passed: 3, total: 3 });
+		renderConsumer();
+
+		act(() => screen.getByRole('button', { name: 'Submit' }).click());
+
+		expect(fake.socket.emitWithAck).toHaveBeenCalledWith('game:submit', { questionId: 3, code: 'print(1)' });
+	});
+
+	it('US-6-T-6 resolves a submission with the game\'s grading', async () => {
+		fake.socket.emitWithAck.mockResolvedValue({ verdict: 'Accepted', passed: 3, total: 3 });
+		renderConsumer();
+
+		act(() => screen.getByRole('button', { name: 'Submit' }).click());
+
+		expect(await screen.findByText('Accepted')).toBeTruthy();
+	});
+
+	it('US-6-T-6 rejects a refused submission with a readable message', async () => {
+		fake.socket.emitWithAck.mockResolvedValue({ error: 'cooldown' });
+		renderConsumer();
+
+		act(() => screen.getByRole('button', { name: 'Submit' }).click());
+
+		expect(await screen.findByText('Your team just submitted. Wait a few seconds before submitting again.')).toBeTruthy();
+	});
+
+	it('US-6-T-6 emits game:code with the question id and workspace when sharing code', () => {
+		renderConsumer();
+
+		act(() => screen.getByRole('button', { name: 'Share' }).click());
+
+		expect(fake.socket.emit).toHaveBeenCalledWith('game:code', { questionId: 3, workspace: WORKSPACE });
 	});
 });
