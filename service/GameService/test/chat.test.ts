@@ -21,6 +21,7 @@
 //  - The saved row should have the sender's user id
 //  - The saved row should have a sent time that is set
 //  - The saved row should have the message body as text
+//  - A "chat:send" with text longer than 500 characters should not be saved to "team_messages"
 //
 // The rest of chat-test-pseudo.md is added one test at a time.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -247,5 +248,12 @@ describe('saving team chat messages', () => {
 	it('saves the message body as text on the row', async () => {
 		const row = await sendAndReadSavedRow('saved body');
 		expect(row.text).toBe('saved body');
+	});
+
+	it('does not save a chat:send longer than 500 characters', async () => {
+		// The "Message too long" answer means the server is done with this message.
+		await sockets[0].timeout(2_000).emitWithAck('chat:send', { text: 'a'.repeat(501) });
+		const { rows } = await pool.query('SELECT COUNT(*)::int AS count FROM team_messages WHERE game_id = $1', [gameId]);
+		expect(rows[0].count).toBe(0);
 	});
 });
