@@ -56,3 +56,26 @@
 
  // Game page should show a win by solving every problem
  //  - When the game was won by solving every problem, "by solving every problem" should be displayed
+
+// ============================================================================
+// DRAFT (Claude, for review): ban phase on the game page. Edit / cut / reword before tests are written.
+// The ban screen moves out of /ban into /game/[gameId] and shows while the game
+// is "banning". All socket traffic is mocked; no test touches GameService.
+// ============================================================================
+
+ // Game page should show the ban screen during the ban phase
+ //  - While the game is banning, "Ban a question" should be displayed
+ //  - While the game is banning, the problem list for play should not be displayed
+ //  - While the game is banning, the Forfeit button should not be shown
+ //  - While the game is banning, the time left to ban should be displayed
+ //  - Once the game is playing, "Ban a question" should not be displayed
+
+ // Game page should run the ban screen from the game state
+ //  - Each problem in the match pool should be shown on the ban screen by its topics
+ //  - Clicking "Ban this question" should send that problem's questionId to the game
+ //  - A problem the game state shows banned by another player should display "Banned by <name>"
+ //  - With four players and one ban made, "1 of 4 bans made" should be displayed
+ //  - With four players, the ban screen should display four ban markers
+
+ // Game socket context should send bans
+ //  - Banning should send a "game:ban" event with the questionId to the server

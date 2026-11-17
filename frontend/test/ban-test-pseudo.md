@@ -27,3 +27,19 @@
  //  - When three players have banned, "3 of 6 bans made" should be displayed
  //  - The screen should always display six ban markers
  //  - When two Team 2 players have banned, two ban markers should be marked for Team 2
+
+// ============================================================================
+// DRAFT (Claude, for review): changes to the Issue #69 tests above now that bans are real.
+// The ban screen becomes a component the game page renders, given the questions,
+// the player count and a ban callback as props (no more BanProvider / sample
+// questions, and the standalone /ban route goes away). The tests above keep
+// their behaviour and render that component with mocked props instead of the page.
+//   - "The screen should always display six ban markers"
+//       -> "The screen should display one ban marker per player in the match"
+//   - "When three players have banned, "3 of 6 bans made" should be displayed"
+//       -> keep, with six players in the mocked match
+// ============================================================================
+
+ // The ban screen should describe the match size
+ //  - With six players, the intro should say the match is played on the three questions that are left
+ //  - With two players, the intro should say the match is played on the seven questions that are left

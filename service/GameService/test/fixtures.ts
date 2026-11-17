@@ -43,12 +43,20 @@ function fakeGrading(init?: RequestInit): Promise<Response> {
 	} as Response), FAKE_GRADING_MS));
 }
 
+// The tags the fake CodeService gives a problem: one shared topic plus one
+// unique to the question, so a test can tell problems' topics apart.
+export function fakeTags(questionId: number): string[] {
+	return ['Array', `Topic ${questionId}`];
+}
+
 // Stands in for CodeService: grading (see fakeGrading above) and the
 // GET /problem?difficulty=&quantity= endpoint.
 // Returns plausible problem rows (task_id, question_id, difficulty) sized to
 // whatever `quantity` the caller asked for, labelled with the requested
 // difficulty, so createGame's two calls (6 easy + 3 medium) both resolve with
 // usable rows. question_ids count up from 1 across calls, so they stay unique.
+// Each row also carries CodeService's `tags` column (see fakeTags), which the
+// ban screen shows as the problem's topics.
 export function fakeCodeServiceFetch() {
 	let nextQuestionId = 1;
 	return vi.fn((url: string, init?: RequestInit) => {
@@ -56,11 +64,15 @@ export function fakeCodeServiceFetch() {
 		const params = new URL(url).searchParams;
 		const quantity = Number(params.get('quantity') ?? 0);
 		const difficulty = params.get('difficulty');
-		const problems = Array.from({ length: quantity }, (_, i) => ({
-			task_id: `${url}-${i}`,
-			question_id: nextQuestionId++,
-			difficulty,
-		}));
+		const problems = Array.from({ length: quantity }, (_, i) => {
+			const questionId = nextQuestionId++;
+			return {
+				task_id: `${url}-${i}`,
+				question_id: questionId,
+				difficulty,
+				tags: fakeTags(questionId),
+			};
+		});
 		return Promise.resolve({
 			ok: true,
 			json: () => Promise.resolve(problems),
