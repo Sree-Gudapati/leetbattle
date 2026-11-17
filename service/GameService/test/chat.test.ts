@@ -18,6 +18,7 @@
 //  - A valid "chat:send" should add one row to "team_messages"
 //  - The saved row should have the game's id
 //  - The saved row should have the sender's team
+//  - The saved row should have the sender's user id
 //
 // The rest of chat-test-pseudo.md is added one test at a time.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -228,5 +229,10 @@ describe('saving team chat messages', () => {
 	it('saves the sender\'s team on the row', async () => {
 		const row = await sendAndReadSavedRow();
 		expect(row.team).toBe('a');
+	});
+
+	it('saves the sender\'s user id on the row', async () => {
+		const row = await sendAndReadSavedRow();
+		expect(row.user_id).toBe(players[0].userId);
 	});
 });
