@@ -48,6 +48,11 @@ export interface GameResult {
 
 const otherTeam = (team: TeamId): TeamId => (team === 'a' ? 'b' : 'a');
 
+// When the clock runs out, the higher score wins; level scores are a draw.
+export function resultOnTime({ a, b }: Record<TeamId, number>): GameResult {
+	return { winner: a === b ? null : a > b ? 'a' : 'b', reason: 'time' };
+}
+
 // Wraps the Express app in an HTTP server and attaches the socket.io endpoint
 // to it, so one port serves both the REST routes and the live game traffic.
 //
@@ -107,8 +112,7 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 	};
 
 	const endOnTime = (game: GameState) => {
-		const { a, b } = game.scores;
-		void endGame(game, { winner: a === b ? null : a > b ? 'a' : 'b', reason: 'time' });
+		void endGame(game, resultOnTime(game.scores));
 	};
 
 	// Starts the player's reconnect window. If it runs out they count as having

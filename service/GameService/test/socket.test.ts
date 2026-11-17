@@ -50,12 +50,20 @@
 //  - Once the cooldown has passed, the team should be able to submit again
 // Game should end once a team solves every problem
 //  - When a team has solved every problem in the pool, that team should win with reason "solved"
+// Game should decide the winner when time runs out
+//  - When team a has the higher score, team a should win
+//  - When team b has the higher score, team b should win
+//  - When the scores are level, the game should be a draw
+// Game should still finish when saving its end fails
+//  - When the database can't save the end of the game, the players should still receive the result
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EncryptJWT } from 'jose';
 import { io } from 'socket.io-client';
 import type { Socket } from 'socket.io-client';
 import { gameServer, request, socketUrl } from './setup';
+import { pool } from '../src/db';
+import { resultOnTime } from '../src/server';
 import { FAKE_GRADING_MS, fakeCodeServiceFetch, sixReadyPlayers } from './fixtures';
 import type { ReadyPlayer } from './fixtures';
 
@@ -560,5 +568,42 @@ describe('winning by solving every problem', () => {
 		const ended = nextEvent<GameResult>(sockets[1], 'game:ended');
 		await submit(sockets[0], pool[pool.length - 1].questionId, 'correct');
 		expect(await ended).toEqual({ winner: 'a', reason: 'solved' });
+	});
+});
+
+// The 20-minute clock can't be shortened per test (every test shares one
+// server), so the time-out rule is tested directly.
+describe('result when time runs out', () => {
+	it('gives the win to team a when it has the higher score', () => {
+		expect(resultOnTime({ a: 3, b: 1 })).toEqual({ winner: 'a', reason: 'time' });
+	});
+
+	it('gives the win to team b when it has the higher score', () => {
+		expect(resultOnTime({ a: 0, b: 2 })).toEqual({ winner: 'b', reason: 'time' });
+	});
+
+	it('calls a draw when the scores are level', () => {
+		expect(resultOnTime({ a: 1, b: 1 })).toEqual({ winner: null, reason: 'time' });
+	});
+});
+
+describe('when saving the end of the game fails', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('still sends the players the result', async () => {
+		const game = await newGame(1, 1);
+		const [teamA, teamB] = await joinAll(game);
+		// Only the end-of-game UPDATE fails; every other query runs as normal.
+		const query = pool.query.bind(pool);
+		vi.spyOn(pool, 'query').mockImplementation(((text: unknown, ...rest: unknown[]) => (
+			typeof text === 'string' && text.startsWith('UPDATE game SET ended_at')
+				? Promise.reject(new Error('connection lost'))
+				: (query as (..._args: unknown[]) => unknown)(text, ...rest)
+		)) as typeof pool.query);
+		const ended = nextEvent<GameResult>(teamB, 'game:ended');
+		teamA.emit('game:forfeit');
+		expect(await ended).toEqual({ winner: 'b', reason: 'forfeit' });
 	});
 });

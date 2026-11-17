@@ -3,7 +3,8 @@ import {beforeAll, afterAll} from 'vitest';
 import supertest from 'supertest';
 import TestAgent from 'supertest/lib/agent';
 
-import * as db from './db';
+// The pool itself; the schema helpers in ./db only run in test/global-setup.ts.
+import { shutdown } from '../src/db';
 import app from '../src/app';
 import { createGameServer } from '../src/server';
 
@@ -27,10 +28,11 @@ beforeAll(async () => {
 	gameServer = createGameServer(app, { joinWaitMs: 300, reconnectGraceMs: 300, submitCooldownMs: 100 });
 	await new Promise<void>((resolve) => gameServer.httpServer.listen(0, '127.0.0.1', resolve));
 	request = supertest(gameServer.httpServer);
-	return db.reset();
+	// The schema is reset once for the whole run in test/global-setup.ts, not
+	// here: test files run in parallel and would race each other's CREATE TABLEs.
 });
 
 afterAll(async () => {
 	await gameServer.close();
-	await db.shutdown();
+	await shutdown();
 });

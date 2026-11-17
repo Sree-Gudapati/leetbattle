@@ -61,3 +61,11 @@
 
  // Game should end once a team solves every problem
  //  - When a team has solved every problem in the pool, that team should win with reason "solved"
+
+ // Game should decide the winner when time runs out
+ //  - When team a has the higher score, team a should win
+ //  - When team b has the higher score, team b should win
+ //  - When the scores are level, the game should be a draw
+
+ // Game should still finish when saving its end fails
+ //  - When the database can't save the end of the game, the players should still receive the result
