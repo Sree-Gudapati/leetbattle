@@ -295,6 +295,12 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 			});
 		});
 
+		// Team chat (US-3-T-2): passes a player's message on to their own team.
+		// The team room comes from the server's roster, never the client.
+		socket.on('chat:send', (message: { text?: unknown }) => {
+			socket.to(`${gameRoom(game)}:${player.team}`).emit('chat:message', { text: message?.text });
+		});
+
 		// A team forfeits once every teammate still in the game has voted to.
 		socket.on('game:forfeit', () => {
 			if (game.phase !== 'playing') return;
