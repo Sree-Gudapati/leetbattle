@@ -303,6 +303,7 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 		// the client. The saved row's id and time are the ones sent out.
 		socket.on('chat:send', async (message: { text?: unknown }, ack?: (_response: { error: string }) => void) => {
 			const reply = typeof ack === 'function' ? ack : () => undefined;
+			if (game.phase === 'ended') return;
 			const text = message?.text;
 			if (typeof text !== 'string') return;
 			if (text.length > MAX_CHAT_LENGTH) return reply({ error: 'Message too long' });
