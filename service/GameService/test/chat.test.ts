@@ -9,6 +9,9 @@
 //  - A "chat:message" should carry the message id, sender's user id, display name, team, text and sent time
 //  - A player on the other team should not receive the "chat:message"
 //
+// GameService should limit message text
+//  - A "chat:send" with no more than 500 characters should be delivered
+//
 // The rest of chat-test-pseudo.md is added one test at a time.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EncryptJWT } from 'jose';
@@ -148,5 +151,14 @@ describe('team chat delivery', () => {
 		await teammate;
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		expect(otherTeam).toEqual([]);
+	});
+});
+
+describe('team chat message length', () => {
+	it('delivers a chat:send with no more than 500 characters', async () => {
+		const longest = 'a'.repeat(500);
+		const teammate = nextEvent<ChatMessage>(sockets[1], 'chat:message');
+		sockets[0].emit('chat:send', { text: longest });
+		expect((await teammate).text).toBe(longest);
 	});
 });
