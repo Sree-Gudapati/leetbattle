@@ -23,6 +23,9 @@
 //  - The saved row should have the message body as text
 //  - A "chat:send" with text longer than 500 characters should not be saved to "team_messages"
 //
+// GameService should not take chat messages after the game has ended
+//  - After "game:ended", a "chat:send" should not be saved to "team_messages"
+//
 // The rest of chat-test-pseudo.md is added one test at a time.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EncryptJWT } from 'jose';
@@ -82,10 +85,58 @@ async function joinGame(userId: string, gameIdToJoin: string): Promise<Socket> {
 		auth: { token: await tokenFor(userId), gameId: gameIdToJoin },
 	});
 	clients.push(socket);
-	const joined = nextEvent(socket, 'game:state');
+	const joined = nextEvent<GameStatePayload>(socket, 'game:state');
 	socket.connect();
-	await joined;
+	problemPool = (await joined).problemPool;
 	return socket;
+}
+
+// The parts of the `game:state` payload these tests use.
+interface GameStatePayload {
+	phase: 'waiting' | 'banning' | 'playing';
+	problemPool: { questionId: number }[];
+	forfeitVotes: Record<'a' | 'b', number>;
+}
+
+// The game's nine problems, as the last player to join was sent them.
+let problemPool: GameStatePayload['problemPool'];
+
+// Resolves with the next `game:state` that satisfies `predicate`.
+function nextState(socket: Socket, predicate: (_state: GameStatePayload) => boolean): Promise<GameStatePayload> {
+	return new Promise((resolve, reject) => {
+		const timeout = setTimeout(() => {
+			socket.off('game:state', onState);
+			reject(new Error('Timed out waiting for the expected game state'));
+		}, 2_000);
+		const onState = (state: GameStatePayload) => {
+			if (!predicate(state)) return;
+			clearTimeout(timeout);
+			socket.off('game:state', onState);
+			resolve(state);
+		};
+		socket.on('game:state', onState);
+	});
+}
+
+// Plays the test's game to its end: every player bans a different problem so
+// play starts, then team b forfeits. Player 5 casts team b's last forfeit vote
+// and sends a chat:send with `text` straight after it, so the server handles
+// that message once the game has ended but before it closes the sockets.
+// Resolves once team a has been told the game ended.
+async function sendChatAsGameEnds(text: string): Promise<void> {
+	const playing = nextState(sockets[0], (state) => state.phase === 'playing');
+	for (const [i, socket] of sockets.entries()) {
+		await socket.timeout(2_000).emitWithAck('game:ban', { questionId: problemPool[i].questionId });
+	}
+	await playing;
+	const twoVotes = nextState(sockets[0], (state) => state.forfeitVotes.b === 2);
+	sockets[3].emit('game:forfeit');
+	sockets[4].emit('game:forfeit');
+	await twoVotes;
+	const ended = nextEvent(sockets[0], 'game:ended');
+	sockets[5].emit('game:forfeit');
+	sockets[5].emit('chat:send', { text });
+	await ended;
 }
 
 // Waits until the server has processed every client disconnect, so one
@@ -253,6 +304,16 @@ describe('saving team chat messages', () => {
 	it('does not save a chat:send longer than 500 characters', async () => {
 		// The "Message too long" answer means the server is done with this message.
 		await sockets[0].timeout(2_000).emitWithAck('chat:send', { text: 'a'.repeat(501) });
+		const { rows } = await pool.query('SELECT COUNT(*)::int AS count FROM team_messages WHERE game_id = $1', [gameId]);
+		expect(rows[0].count).toBe(0);
+	});
+});
+
+describe('team chat after the game has ended', () => {
+	it('does not save a chat:send sent after game:ended', async () => {
+		await sendChatAsGameEnds('too late');
+		// Give a (wrongly) accepted message time to finish saving.
+		await new Promise((resolve) => setTimeout(resolve, 100));
 		const { rows } = await pool.query('SELECT COUNT(*)::int AS count FROM team_messages WHERE game_id = $1', [gameId]);
 		expect(rows[0].count).toBe(0);
 	});
