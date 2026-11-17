@@ -2,7 +2,7 @@
 // With a game socket (US-3-T-2), `send` emits `chat:send` to GameService.
 // Without one, messages live in local state only.
 'use client';
-import { createContext, useContext, useState, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import type { Socket } from 'socket.io-client';
 import { useAuth } from '../login/context';
 
@@ -32,6 +32,16 @@ export function ChatProvider({
 }) {
 	const { user } = useAuth();
 	const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+
+	// GameService sends each team message (the player's own included) as `chat:message`.
+	useEffect(() => {
+		if (!socket) return;
+		const onMessage = (message: ChatMessage) => setMessages((current) => [...current, message]);
+		socket.on('chat:message', onMessage);
+		return () => {
+			socket.off('chat:message', onMessage);
+		};
+	}, [socket]);
 
 	const send = (text: string) => {
 		// Over the socket, the message only shows once GameService sends it back.
