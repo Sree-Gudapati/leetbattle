@@ -5,6 +5,7 @@
 //
 // GameService should deliver a team chat message to the sender's team
 //  - A player's "chat:send" should be delivered as a "chat:message" to every connected teammate
+//  - The sender should receive their own "chat:message"
 //
 // The rest of chat-test-pseudo.md is added one test at a time.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -112,5 +113,11 @@ describe('team chat delivery', () => {
 		sockets[0].emit('chat:send', { text: 'hello team' });
 		const received = await Promise.all(teammates);
 		expect(received.map((message) => message.text)).toEqual(['hello team', 'hello team']);
+	});
+
+	it('sends the sender their own chat:message', async () => {
+		const own = nextEvent<ChatMessage>(sockets[0], 'chat:message');
+		sockets[0].emit('chat:send', { text: 'hello team' });
+		expect((await own).text).toBe('hello team');
 	});
 });
