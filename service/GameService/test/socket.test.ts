@@ -885,3 +885,104 @@ describe('saving the bans', () => {
 		expect(saved.rows).toHaveLength(7);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// US-2-T-2 (#48): Players' code should reach only their own team
+//  - When a player sends their code, a teammate should receive it with the player's userId
+//  - The teammate should receive the question id and the workspace that was sent
+//  - A player on the other team should never receive it
+//  - The player who sent it should not receive it back
+//  - Code sent before play has started should not be relayed
+//  - Code for a question that isn't in the match pool should not be relayed
+//  - A malformed workspace should not be relayed
+//
+// A player sends their whole editor workspace for one question on
+// `game:code`; GameService passes it on to their own team room only, so the
+// other team can never receive it (enforced on the server, not the UI).
+// ---------------------------------------------------------------------------
+
+// One player's editor for one question: their tabs and which one is open.
+const WORKSPACE = { tabs: [{ id: 'tab-1', name: 'Tab 1', code: 'def solve():\n    return 1' }], activeTabId: 'tab-1' };
+
+// What GameService relays on `game:code`.
+interface CodePayload {
+	userId: string;
+	displayName: string;
+	questionId: number;
+	workspace: typeof WORKSPACE;
+}
+
+// Long enough for a relay that was going to arrive to have arrived.
+const RELAY_WAIT_MS = 100;
+
+// Records every `game:code` the socket receives, so a test can check that
+// nothing arrived.
+function recordCode(socket: Socket): CodePayload[] {
+	const received: CodePayload[] = [];
+	socket.on('game:code', (payload: CodePayload) => received.push(payload));
+	return received;
+}
+
+describe('relaying code to teammates', () => {
+	// In a 2v2 the sockets are [team a, team a, team b, team b].
+	it('gives a teammate the sending player\'s userId', async () => {
+		const { game, sockets, pool } = await playingGame(2, 2);
+		const relayed = nextEvent<CodePayload>(sockets[1], 'game:code');
+		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE });
+		expect((await relayed).userId).toBe(game.players[0].userId);
+	});
+
+	it('gives a teammate the question id and the workspace that was sent', async () => {
+		const { sockets, pool } = await playingGame(2, 2);
+		const relayed = nextEvent<CodePayload>(sockets[1], 'game:code');
+		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE });
+		const payload = await relayed;
+		expect({ questionId: payload.questionId, workspace: payload.workspace })
+			.toEqual({ questionId: pool[0].questionId, workspace: WORKSPACE });
+	});
+
+	it('never sends the code to the other team', async () => {
+		const { sockets, pool } = await playingGame(2, 2);
+		const otherTeam = recordCode(sockets[2]);
+		// Wait for the teammate's copy, so the relay has definitely happened.
+		const relayed = nextEvent<CodePayload>(sockets[1], 'game:code');
+		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE });
+		await relayed;
+		await pause(RELAY_WAIT_MS);
+		expect(otherTeam).toEqual([]);
+	});
+
+	it('does not send the code back to the player who sent it', async () => {
+		const { sockets, pool } = await playingGame(2, 2);
+		const sender = recordCode(sockets[0]);
+		const relayed = nextEvent<CodePayload>(sockets[1], 'game:code');
+		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE });
+		await relayed;
+		await pause(RELAY_WAIT_MS);
+		expect(sender).toEqual([]);
+	});
+
+	it('does not relay code sent before play has started', async () => {
+		const { sockets, pool } = await banningGame(2, 2);
+		const teammate = recordCode(sockets[1]);
+		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE });
+		await pause(RELAY_WAIT_MS);
+		expect(teammate).toEqual([]);
+	});
+
+	it('does not relay code for a question that isn\'t in the match pool', async () => {
+		const { sockets } = await playingGame(2, 2);
+		const teammate = recordCode(sockets[1]);
+		sockets[0].emit('game:code', { questionId: -1, workspace: WORKSPACE });
+		await pause(RELAY_WAIT_MS);
+		expect(teammate).toEqual([]);
+	});
+
+	it('does not relay a malformed workspace', async () => {
+		const { sockets, pool } = await playingGame(2, 2);
+		const teammate = recordCode(sockets[1]);
+		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: { tabs: 'not a list' } });
+		await pause(RELAY_WAIT_MS);
+		expect(teammate).toEqual([]);
+	});
+});
