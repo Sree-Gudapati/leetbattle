@@ -4,9 +4,10 @@ import { SubmitEvent, useEffect, useState } from 'react';
 import { useAuth } from './context';
 import PageLoader from '../_shared/page-loader';
 import HomeTopBar from '../_home/components/topbar';
-import { AuthCard, AuthField, AuthMessage, AuthSubmitButton } from './components/components';
+import { AuthAPIService } from './controller';
+import { AuthCard, AuthCheck, AuthField, AuthMessage, AuthSubmitButton, AuthTextButton } from './components/components';
 
-type Mode = 'login' | 'signup';
+type Mode = 'login' | 'signup' | 'forgot' | 'sent';
 
 export default function LoginPage() {
 	const { login, signup, user, isLoading } = useAuth();
@@ -23,6 +24,11 @@ export default function LoginPage() {
 		setError(null);
 		setIsSubmitting(true);
 		try {
+			if (mode === 'forgot') {
+				await new AuthAPIService().requestPasswordReset(email);
+				setMode('sent');
+				return;
+			}
 			if (mode === 'signup') {
 				await signup(email, password, name);
 			} else {
@@ -30,7 +36,7 @@ export default function LoginPage() {
 			}
 			router.push('/');
 		} catch (err) {
-			setError(err instanceof Error ? err.message : `failed to ${mode === 'signup' ? 'sign up' : 'log in'}`);
+			setError(err instanceof Error ? err.message : `failed to ${mode === 'signup' ? 'sign up' : mode === 'forgot' ? 'send the reset link' : 'log in'}`);
 		} finally {
 			setIsSubmitting(false);
 		}
@@ -44,6 +50,47 @@ export default function LoginPage() {
 
 	if (isLoading || user) {
 		return null;
+	}
+
+	const backToLogin = () => {
+		setError(null);
+		setMode('login');
+	};
+
+	if (mode === 'sent') {
+		return (
+			<>
+				<PageLoader variant="pen" />
+				<HomeTopBar />
+				<AuthCard title="Check your email">
+					<div className="flex flex-col gap-4">
+						<AuthCheck />
+						<p role="status" className="text-sm text-muted">
+							If an account exists for that address, a reset link is on its way. The link works for 30 minutes.
+						</p>
+						<AuthTextButton onClick={backToLogin}>Back to log in</AuthTextButton>
+					</div>
+				</AuthCard>
+			</>
+		);
+	}
+
+	if (mode === 'forgot') {
+		return (
+			<>
+				<PageLoader variant="pen" />
+				<HomeTopBar />
+				<AuthCard title="Reset your password">
+					<form onSubmit={onSubmit} className="flex flex-col gap-4">
+						<p className="text-sm text-muted">Enter your email and we will send you a link to choose a new password.</p>
+						<AuthField label="Email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+						<AuthMessage status={error ? { type: 'error', text: error } : null} />
+						<AuthSubmitButton pending={isSubmitting} pendingLabel="Sending…">Send reset link</AuthSubmitButton>
+						<AuthTextButton onClick={backToLogin}>Back to log in</AuthTextButton>
+					</form>
+				</AuthCard>
+			</>
+		);
 	}
 
 	return (
@@ -76,6 +123,17 @@ export default function LoginPage() {
 						value={password}
 						onChange={(e) => setPassword(e.target.value)}
 					/>
+					{mode === 'login' && (
+						<AuthTextButton
+							className="-mt-2 self-end"
+							onClick={() => {
+								setError(null);
+								setMode('forgot');
+							}}
+						>
+							Forgot password?
+						</AuthTextButton>
+					)}
 
 					<AuthMessage status={error ? { type: 'error', text: error } : null} />
 
@@ -83,16 +141,14 @@ export default function LoginPage() {
 						{mode === 'signup' ? 'Sign up' : 'Log in'}
 					</AuthSubmitButton>
 
-					<button
-						type="button"
+					<AuthTextButton
 						onClick={() => {
 							setError(null);
 							setMode(mode === 'signup' ? 'login' : 'signup');
 						}}
-						className="text-sm underline"
 					>
 						{mode === 'signup' ? 'Already have an account?' : 'Need an account?'}
-					</button>
+					</AuthTextButton>
 				</form>
 			</AuthCard>
 		</>

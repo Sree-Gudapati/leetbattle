@@ -486,7 +486,13 @@ html.lb-intro-seen { --lb-intro-delay: 0.1s; }
 .lb-second { display: inline-block; animation: lb-second-in 0.5s cubic-bezier(0.2, 0.7, 0.2, 1); }
 .lb-drain { transform-origin: left; animation: lb-drain linear forwards; }
 
+/* Sign in: the check mark above "Check your email" draws itself. */
+.lb-auth-check { color: var(--lb-primary); }
+.lb-auth-check circle { stroke-dasharray: 120; stroke-dashoffset: 120; animation: lb-draw 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) forwards; }
+.lb-auth-check path { stroke-dasharray: 30; stroke-dashoffset: 30; animation: lb-draw 0.35s 0.4s cubic-bezier(0.2, 0.7, 0.2, 1) forwards; }
+
 @media (prefers-reduced-motion: reduce) {
+  .lb-auth-check circle, .lb-auth-check path { stroke-dashoffset: 0; animation: none; }
   .lb-press, .lb-seat-pip { transition: none; }
   .lb-seat-in, .lb-fade-in, .lb-second { animation: none; }
   .lb-check { stroke-dashoffset: 0; animation: none; }

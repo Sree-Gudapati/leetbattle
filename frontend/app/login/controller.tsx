@@ -113,4 +113,22 @@ export class AuthAPIService {
 		const { user } = await parseResponse<{ user: User }>(res);
 		return user;
 	}
+
+	public async requestPasswordReset(email: string): Promise<void> {
+		const res = await fetch(`${AUTHSERVICE}/password/forgot`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ email }),
+		});
+		await parseResponse(res);
+	}
+
+	public async resetPassword(token: string, newPassword: string): Promise<void> {
+		const res = await fetch(`${AUTHSERVICE}/password/reset`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ token, newPassword }),
+		});
+		await parseResponse(res);
+	}
 }

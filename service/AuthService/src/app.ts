@@ -10,6 +10,8 @@ import {
 	signup,
 	changePassword,
 	updateAccount,
+	forgotPassword,
+	resetPassword,
 } from './service';
 
 const app = express();
@@ -24,6 +26,8 @@ app.post('/login', login);
 app.post('/logout', logout);
 app.get('/me', requireAuth, me);
 app.post('/password', requireAuth, changePassword);
+app.post('/password/forgot', forgotPassword);
+app.post('/password/reset', resetPassword);
 app.patch('/account', requireAuth, updateAccount);
 
 const errorHandler: ErrorRequestHandler = (err, _req, res, _next: NextFunction) => {
