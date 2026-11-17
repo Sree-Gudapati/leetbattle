@@ -34,7 +34,11 @@ export function ChatProvider({
 	const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
 
 	const send = (text: string) => {
-		socket?.emit('chat:send', { text: text.trim() });
+		// Over the socket, the message only shows once GameService sends it back.
+		if (socket) {
+			socket.emit('chat:send', { text: text.trim() });
+			return;
+		}
 		setMessages((current) => [
 			...current,
 			{
