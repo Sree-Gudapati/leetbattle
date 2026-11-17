@@ -274,4 +274,16 @@ describe('showing comments the server delivers', () => {
 
 		expect(screen.getByRole('listitem').textContent).toContain('Grace');
 	});
+
+	it('US-3-T-2 shows the player\'s own comment once when the server sends it back', async () => {
+		const user = userEvent.setup();
+		const fake = renderChatWithSocket();
+
+		await user.type(messageBox(), 'Question 1 is done');
+		await user.click(sendButton());
+		// GameService sends the sender their own message too.
+		act(() => fake.fire('chat:message', { ...fromGrace, id: 'm10', userId: 'u1', displayName: 'Ada', text: 'Question 1 is done' }));
+
+		expect(screen.queryAllByText('Question 1 is done')).toHaveLength(1);
+	});
 });
