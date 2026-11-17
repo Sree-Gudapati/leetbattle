@@ -7,7 +7,7 @@
 // the whole match screen serves its problems from a stubbed fetch, and the
 // US-3-T-2 tests hand the provider a fake game socket.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { fakeUser, jsonResponse, stubFetch, threeProblems } from './helpers';
 
@@ -245,5 +245,25 @@ describe('sending comments over the game socket', () => {
 		await user.click(sendButton());
 
 		expect(screen.getByText('Question 1 is done')).toBeTruthy();
+	});
+});
+
+// A chat:message from Grace (u2), a teammate of the signed-in player, as GameService sends it.
+const fromGrace = {
+	id: 'm9',
+	userId: 'u2',
+	displayName: 'Grace',
+	team: 'a',
+	text: 'Try a hash map',
+	sentAt: '2026-11-17T12:00:00.000Z',
+};
+
+describe('showing comments the server delivers', () => {
+	it('US-3-T-2 shows an incoming chat:message in the panel once', () => {
+		const fake = renderChatWithSocket();
+
+		act(() => fake.fire('chat:message', fromGrace));
+
+		expect(screen.queryAllByText('Try a hash map')).toHaveLength(1);
 	});
 });
