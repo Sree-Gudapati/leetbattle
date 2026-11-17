@@ -2,38 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import { request } from './setup';
+import { fakeCodeServiceFetch, sixReadyPlayers } from './fixtures';
 import { pool } from '../src/db';
 
 // Matches the CODE_SERVICE_URL fallback in src/service.ts (CodeService's own
 // default port - see service/CodeService/src/index.ts).
 const CODE_SERVICE_URL = 'http://localhost:4001';
-
-// Six LobbyPlayer-shaped entries split 3/3 across teams 'a' and 'b', matching
-// the payload LobbyService's `lobby:ready-for-match` event sends. Fresh
-// random userIds each call, since GameService has no cross-service FK to
-// AuthService's users table - any UUID is a valid player for this service.
-function sixReadyPlayers() {
-	return [0, 1, 2, 3, 4, 5].map((i) => ({
-		userId: randomUUID(),
-		displayName: `player-${i}`,
-		team: i < 3 ? 'a' : 'b',
-	}));
-}
-
-// Stands in for CodeService's GET /problem?difficulty=&quantity= endpoint.
-// Returns a plausible task_id-bearing problem array sized to whatever
-// `quantity` the caller asked for, regardless of difficulty, so createGame's
-// two calls (6 easy + 3 medium) both resolve with usable rows.
-function fakeCodeServiceFetch() {
-	return vi.fn((url: string) => {
-		const quantity = Number(new URL(url).searchParams.get('quantity') ?? 0);
-		const problems = Array.from({ length: quantity }, (_, i) => ({ task_id: `${url}-${i}` }));
-		return Promise.resolve({
-			ok: true,
-			json: () => Promise.resolve(problems),
-		} as Response);
-	});
-}
 
 // Every test in this file goes through createGame at least once (directly or
 // via a beforeAll), and createGame now calls out to CodeService - stub
@@ -68,8 +42,35 @@ describe('health check', () => {
 // PUT game should start a game, taking a request that accepts the
 // 6 players with their teams as the body
 // PUT game should reject any malformed requests with a 400
+// PUT game should accept smaller matches chosen in the lobby
+//  - A 1v1 match (two players, one per team) should start
+//  - A 2v2 match (four players, two per team) should start
+//  - Teams of different sizes (three players vs one) should be rejected with a 400
 // GET game/id should find the first active game ID from the playerID.
 // If an active game doesn't exist, return 404
+
+// Builds a roster with `teamA` players on team a and `teamB` on team b.
+function roster(teamA: number, teamB: number) {
+	return sixReadyPlayers().slice(0, teamA + teamB)
+		.map((player, i) => ({ ...player, team: i < teamA ? 'a' : 'b' }));
+}
+
+describe('PUT /game with a chosen team size', () => {
+	it('starts a 1v1 match', async () => {
+		const res = await request.put('/game').send({ players: roster(1, 1) });
+		expect(res.status).toBe(201);
+	});
+
+	it('starts a 2v2 match', async () => {
+		const res = await request.put('/game').send({ players: roster(2, 2) });
+		expect(res.status).toBe(201);
+	});
+
+	it('rejects teams of different sizes', async () => {
+		const res = await request.put('/game').send({ players: roster(3, 1) });
+		expect(res.status).toBe(400);
+	});
+});
 
 describe('PUT /game', () => {
 	it('starts a game for six players split across two teams', async () => {
@@ -128,6 +129,53 @@ describe('PUT /game', () => {
 				.send({ players: sixReadyPlayers() });
 			expect(res.status).toBe(500);
 		});
+	});
+});
+
+// PUT game should fail cleanly when CodeService can't supply the problems
+//  - When CodeService responds with an error status, PUT game should respond with a 502
+//  - When CodeService is unreachable, PUT game should respond with a 502
+//  - When CodeService fails, none of the players should be saved to a game
+// PUT game should never leave a half-saved game behind
+//  - When saving fails partway (the same player listed twice), none of the players should be saved to a game
+describe('PUT /game when it cannot finish creating the game', () => {
+	// Players saved to any game for these user ids. Scoped to the test's own
+	// roster, since other test files create games in the same database.
+	async function savedPlayers(players: { userId: string }[]): Promise<number> {
+		const result = await pool.query('SELECT 1 FROM players WHERE user_id = ANY($1::uuid[])', [players.map((player) => player.userId)]);
+		return result.rowCount ?? 0;
+	}
+
+	function failingCodeService() {
+		codeServiceFetch.mockResolvedValueOnce({ ok: false, status: 404, json: () => Promise.resolve({ message: 'problem not found' }) } as Response);
+	}
+
+	it('responds 502 when CodeService responds with an error', async () => {
+		failingCodeService();
+		const res = await request.put('/game').send({ players: sixReadyPlayers() });
+		expect(res.status).toBe(502);
+	});
+
+	it('responds 502 when CodeService is unreachable', async () => {
+		codeServiceFetch.mockRejectedValueOnce(new TypeError('fetch failed'));
+		const res = await request.put('/game').send({ players: sixReadyPlayers() });
+		expect(res.status).toBe(502);
+	});
+
+	it('saves none of the players when CodeService fails', async () => {
+		failingCodeService();
+		const players = sixReadyPlayers();
+		await request.put('/game').send({ players });
+		expect(await savedPlayers(players)).toBe(0);
+	});
+
+	it('saves none of the players when saving fails partway', async () => {
+		// The last player is the first one again, so saving the roster breaks on
+		// the (game_id, user_id) primary key after the earlier players are written.
+		const players = sixReadyPlayers();
+		players[5] = { ...players[0], team: 'b' };
+		await request.put('/game').send({ players });
+		expect(await savedPlayers(players)).toBe(0);
 	});
 });
 

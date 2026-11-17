@@ -84,6 +84,13 @@ export class APIService {
 		});
 		return await handleResponse(res);
 	}
+	// One problem by its question_id (the game page loads pool problems this way).
+	public async getProblem(questionId: number): Promise<Problem> {
+		const res = await fetch(`${CODESERVICE}/problem/${questionId}`, {
+			method: 'GET',
+		});
+		return await handleResponse(res);
+	}
 	public async run(code: string, cases: unknown, questionId: number): Promise<RunResult> {
 		const res = await fetch(`${CODESERVICE}/solution`, {
 			method: 'POST',

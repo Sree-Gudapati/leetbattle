@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 // Shared mocks. The lobby page never talks to LobbyService in these tests:
@@ -11,9 +11,11 @@ const lobbyMocks = vi.hoisted(() => ({
 	emit: vi.fn(),
 	connect: vi.fn(),
 	clearError: vi.fn(),
+	// Where the page navigates once the match starts.
+	push: vi.fn(),
 }));
 
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: lobbyMocks.push, replace: vi.fn() }) }));
 vi.mock('../app/login/context', () => ({ useAuth: () => lobbyMocks.useAuth() }));
 vi.mock('../app/lobby/socket-context', () => ({
 	useLobbySocket: () => lobbyMocks.useLobbySocket(),
@@ -80,10 +82,14 @@ function configureLobby({ userId = 'u1', players = fullTeams, lobby = {}, contex
 			canReady: true,
 			readyToStart: false,
 			countdownSecondsRemaining: null,
+			// Three per team, hosted by u1, unless a test picks otherwise.
+			teamSize: 3,
+			hostId: 'u1',
 			...lobby,
 		},
 		error: null,
 		matchReadiness: null,
+		gameStarted: null,
 		connect: lobbyMocks.connect,
 		clearError: lobbyMocks.clearError,
 		...context,
@@ -180,12 +186,20 @@ describe('lobby errors and match readiness', () => {
 		expect(screen.getByRole('alert').textContent).toBe('Team 1 is full.');
 	});
 
-	it('US-1-T-1 shows the ready-for-match banner once the match is ready', () => {
+	it('US-6-T-2 navigates to the game page once the game has started', () => {
+		configureLobby({ context: { matchReadiness: { lobbyId: 'main', players: fullTeams }, gameStarted: { gameId: 'game-1' } } });
+		render(<LobbyPage />);
+
+		// After lobby:game-started, the page hands the player over to /game/<gameId>.
+		expect(lobbyMocks.push).toHaveBeenCalledWith('/game/game-1');
+	});
+
+	it('US-6-T-2 shows "Joining match…" while GameService creates the game', () => {
+		// The countdown has finished (ready-for-match) but the gameId hasn't arrived yet.
 		configureLobby({ context: { matchReadiness: { lobbyId: 'main', players: fullTeams } } });
 		render(<LobbyPage />);
 
-		// After lobby:ready-for-match, the page confirms the lobby is ready for the match.
-		expect(screen.getByText(/Lobby main is ready for the match/)).toBeTruthy();
+		expect(screen.getByText('Joining match…')).toBeTruthy();
 	});
 });
 
@@ -288,6 +302,52 @@ describe('lobby team selection', () => {
 		render(<LobbyPage />);
 
 		expect(screen.getByRole('button', { name: 'Team full' })).toBeTruthy();
+	});
+});
+
+// The host should be able to choose the number of players per team
+//  - The host should see a "Players per team" control with 1v1, 2v2 and 3v3 options
+//  - Clicking "2v2" should send a set-team-size event with 2
+//  - A player who is not the host should not see the team size options
+//  - With a team size of 2 and 2 players ready, the status should display "2/4 players ready"
+//  - With a team size of 1 and 2 players in the lobby, "This lobby is full." should be displayed to a player who has not joined
+describe('lobby team size', () => {
+	it('shows the host a "Players per team" control with 1v1, 2v2 and 3v3', () => {
+		render(<LobbyPage />);
+
+		const control = screen.getByRole('group', { name: 'Players per team' });
+		expect(within(control).getAllByRole('button').map((button) => button.textContent)).toEqual(['1v1', '2v2', '3v3']);
+	});
+
+	it('sends a set-team-size event when the host picks 2v2', async () => {
+		const user = userEvent.setup();
+		render(<LobbyPage />);
+
+		await user.click(screen.getByRole('button', { name: '2v2' }));
+
+		expect(lobbyMocks.emit).toHaveBeenCalledWith('lobby:set-team-size', 2);
+	});
+
+	it('hides the team size options from a player who is not the host', () => {
+		configureLobby({ lobby: { hostId: 'u2' } });
+		render(<LobbyPage />);
+
+		expect(screen.queryByRole('button', { name: '2v2' })).toBeNull();
+	});
+
+	it('counts ready players out of the chosen lobby size', () => {
+		const twoPerTeam = [player('u1', 'Ada', 'a', { ready: true }), player('u2', 'Grace', 'a', { ready: true }), player('u4', 'Alan', 'b'), player('u5', 'Edsger', 'b')];
+		configureLobby({ players: twoPerTeam, lobby: { teamSize: 2 } });
+		render(<LobbyPage />);
+
+		expect(screen.getByText('2/4 players ready')).toBeTruthy();
+	});
+
+	it('tells a player who has not joined that a full 1v1 lobby is full', () => {
+		configureLobby({ userId: 'u7', players: [player('u1', 'Ada', 'a'), player('u4', 'Alan', 'b')], lobby: { teamSize: 1 } });
+		render(<LobbyPage />);
+
+		expect(screen.getByText('This lobby is full.')).toBeTruthy();
 	});
 });
 

@@ -2,7 +2,7 @@ import { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
 import { pool } from './db';
 
-const GAME_DURATION_MS = 20 * 60 * 1000;
+export const GAME_DURATION_MS = 20 * 60 * 1000;
 const CODE_SERVICE_URL = process.env.CODE_SERVICE_URL ?? 'http://localhost:4001';
 
 const readyPlayerSchema = z.object({
@@ -11,33 +11,96 @@ const readyPlayerSchema = z.object({
 	team: z.enum(['a', 'b']),
 });
 
+// The lobby host picks 1v1, 2v2 or 3v3, so a match is 2 to 6 players with
+// the same number on each team.
 const startGameBodySchema = z.object({
-	players: z.array(readyPlayerSchema).length(6),
+	players: z.array(readyPlayerSchema).min(2).max(6),
 }).refine(
-	(body) => body.players.filter((player) => player.team === 'a').length === 3,
-	{ message: 'players must be split 3/3 across team a and team b' },
+	(body) => body.players.filter((player) => player.team === 'a').length * 2 === body.players.length,
+	{ message: 'players must be split evenly across team a and team b' },
 );
 
 export type TeamId = 'a' | 'b';
+
+// One problem in a match's pool. game_problems saves only the task_id; the
+// question_id is what CodeService's GET /problem/:questionId looks it up by,
+// so the game page can load the full problem from the pool alone.
+export interface PoolProblem {
+	taskId: string;
+	questionId: number;
+	difficulty: string;
+}
 
 export interface GamePlayerState {
 	userId: string;
 	displayName: string;
 	team: TeamId;
 	connected: boolean;
+	left: boolean; // dropped and didn't reconnect within the window (see src/server.ts)
 }
+
+// waiting: created, waiting for players to connect (the clock hasn't started)
+// playing: the 20-minute clock is running
+// ended:   decided; about to be torn down
+export type GamePhase = 'waiting' | 'playing' | 'ended';
 
 export interface GameState {
 	gameId: string;
-	startedAt: number; // Date.now() at creation; used to compute time remaining
-	endTimer: NodeJS.Timeout; // server-side authority for ending the match - see scheduleGameEnd
+	phase: GamePhase;
+	startedAt: number | null; // Date.now() when play began; used to compute time remaining
 	scores: Record<TeamId, number>; // live counterpart of game.t1_score / t2_score
 	players: Map<string, GamePlayerState>; // keyed by userId
-	problemPool: string[]; // task_ids assigned to this game (game_problems)
+	problemPool: PoolProblem[]; // problems assigned to this game (task_ids saved in game_problems)
 	selections: Map<string, string>; // userId -> task_id currently being worked (player_selections)
+	forfeitVotes: Record<TeamId, Set<string>>; // userIds on each team who chose to forfeit
+	solved: Record<TeamId, Set<string>>; // task_ids each team has had accepted
+	// The per-team submit lock (see `game:submit` in src/server.ts): whether a
+	// submission is being graded, and when the team may next submit.
+	submitting: Record<TeamId, boolean>;
+	cooldownUntil: Record<TeamId, number>;
+	// Server-side timers driving the match - all owned by src/server.ts.
+	timers: {
+		join?: NodeJS.Timeout; // ends the join wait
+		end?: NodeJS.Timeout; // ends the match when the clock runs out
+		leave: Map<string, NodeJS.Timeout>; // userId -> ends that player's reconnect window
+	};
 }
 
 const games = new Map<string, GameState>();
+const createdListeners = new Set<(_game: GameState) => void>();
+
+// The live state for a game this process started, if it is still running.
+export function findGame(gameId: string): GameState | undefined {
+	return games.get(gameId);
+}
+
+// Stops tracking a game once it has ended.
+export function forgetGame(gameId: string): void {
+	games.delete(gameId);
+}
+
+// Lets the socket server start each new game's timers. Returns an unsubscribe.
+export function onGameCreated(listener: (_game: GameState) => void): () => void {
+	createdListeners.add(listener);
+	return () => createdListeners.delete(listener);
+}
+
+// The wire form of a GameState for the `game:state` socket event: everything
+// a client needs to render the match, minus server-only timers and who voted.
+export function serializeGame(game: GameState) {
+	const elapsed = game.startedAt === null ? 0 : Date.now() - game.startedAt;
+	return {
+		gameId: game.gameId,
+		phase: game.phase,
+		startedAt: game.startedAt,
+		secondsRemaining: Math.max(0, Math.ceil((GAME_DURATION_MS - elapsed) / 1000)),
+		scores: game.scores,
+		problemPool: game.problemPool,
+		players: [...game.players.values()],
+		forfeitVotes: { a: game.forfeitVotes.a.size, b: game.forfeitVotes.b.size },
+		solved: { a: [...game.solved.a], b: [...game.solved.b] },
+	};
+}
 
 class HttpError extends Error {
 	status: number;
@@ -51,15 +114,52 @@ class HttpError extends Error {
 // The shared problem pool for a new match: six Easy + three Medium questions
 // from CodeService's GET /problem?difficulty=&quantity= endpoint. Both teams
 // draw from the same nine (see game_problems in sql/schema.sql).
-async function fetchProblemPool(): Promise<string[]> {
-	const [easyRes, mediumRes] = await Promise.all([
-		fetch(`${CODE_SERVICE_URL}/problem?difficulty=Easy&quantity=6`),
-		fetch(`${CODE_SERVICE_URL}/problem?difficulty=Medium&quantity=3`),
-	]);
-	const easyProblems = await easyRes.json() as { task_id: string }[];
-	const mediumProblems = await mediumRes.json() as { task_id: string }[];
-	return [...easyProblems, ...mediumProblems].map((problem) => problem.task_id);
+// Any failure here (an error status, or CodeService not answering at all)
+// becomes a 502, since it's an upstream problem rather than a bad request.
+async function fetchProblemPool(): Promise<PoolProblem[]> {
+	const unavailable = new HttpError(502, 'could not load the problem pool from CodeService');
+	// The fetch Response, not Express's Response imported at the top of this file.
+	let responses: globalThis.Response[];
+	try {
+		responses = await Promise.all([
+			fetch(`${CODE_SERVICE_URL}/problem?difficulty=Easy&quantity=6`),
+			fetch(`${CODE_SERVICE_URL}/problem?difficulty=Medium&quantity=3`),
+		]);
+	} catch {
+		throw unavailable;
+	}
+	if (responses.some((response) => !response.ok)) throw unavailable;
+	const [easyProblems, mediumProblems] = await Promise.all(
+		responses.map((response) => response.json() as Promise<{ task_id: string; question_id: number; difficulty: string }[]>),
+	);
+	return [...easyProblems, ...mediumProblems].map((problem) => ({
+		taskId: problem.task_id,
+		questionId: problem.question_id,
+		difficulty: problem.difficulty,
+	}));
 }
+
+// Saves the game, its players, their teams and its problem pool in one
+// statement. Postgres applies a statement all-or-nothing, so if any part
+// fails (e.g. the same player listed twice) no half-made game is left behind.
+// The foreign keys between these tables are checked at the end of the
+// statement, so writing parent and child rows together is allowed.
+const SAVE_GAME_SQL = `
+	WITH new_game AS (
+		INSERT INTO game DEFAULT VALUES RETURNING game_id
+	), roster AS (
+		SELECT * FROM unnest($1::uuid[], $2::text[], $3::text[]) AS r(user_id, display_name, team)
+	), new_players AS (
+		INSERT INTO players (game_id, user_id, display_name)
+		SELECT new_game.game_id, roster.user_id, roster.display_name FROM new_game, roster
+	), new_teams AS (
+		INSERT INTO player_teams (game_id, user_id, team)
+		SELECT new_game.game_id, roster.user_id, roster.team FROM new_game, roster
+	), new_problems AS (
+		INSERT INTO game_problems (game_id, task_id)
+		SELECT new_game.game_id, pool.task_id FROM new_game, unnest($4::text[]) AS pool(task_id)
+	)
+	SELECT game_id FROM new_game`;
 
 export function getRoot(_req: Request, res: Response) {
 	res.json({
@@ -69,62 +169,48 @@ export function getRoot(_req: Request, res: Response) {
 }
 
 // Called once LobbyService's countdown fires (lobby:ready-for-match). Takes the
-// six ready players + their teams, and:
-//   - INSERTs the `game` row (started_at defaults to NOW(), ended_at stays null)
-//   - INSERTs matching rows into `players` / `player_teams` for all six
-//   - picks the shared problem pool and INSERTs into `game_problems`
+// ready players (1v1 to 3v3) + their teams, and:
+//   - picks the shared problem pool from CodeService first, so nothing is
+//     saved if that fails
+//   - INSERTs the `game` row (started_at defaults to NOW(), ended_at stays null),
+//     matching `players` / `player_teams` rows and `game_problems`, all in one
+//     statement (see SAVE_GAME_SQL)
 //   - creates the in-memory GameState for this game_id (scores, timer, picks)
-//     and starts the match-duration timer (see scheduleGameEnd)
+//     and hands it to the socket server, which runs the join wait and the clock
 // Responds with { gameId } so the frontend can navigate to /game/[gameId].
 export async function createGame(req: Request, res: Response, next: NextFunction) {
 	const body = startGameBodySchema.safeParse(req.body);
 	if (!body.success) {
-		return next(new HttpError(400, 'players must be exactly six entries split 3/3 across teams a and b'));
+		return next(new HttpError(400, 'players must be 2 to 6 entries split evenly across teams a and b'));
 	}
 	const { players } = body.data;
 
 	try {
-		const gameResult = await pool.query<{ game_id: string }>(
-			'INSERT INTO game DEFAULT VALUES RETURNING game_id',
-		);
+		const problemPool = await fetchProblemPool();
+		const gameResult = await pool.query<{ game_id: string }>(SAVE_GAME_SQL, [
+			players.map((player) => player.userId),
+			players.map((player) => player.displayName),
+			players.map((player) => player.team),
+			problemPool.map((problem) => problem.taskId),
+		]);
 		const gameId = gameResult.rows[0].game_id;
 
-		for (const player of players) {
-			await pool.query(
-				'INSERT INTO players (game_id, user_id, display_name) VALUES ($1, $2, $3)',
-				[gameId, player.userId, player.displayName],
-			);
-			await pool.query(
-				'INSERT INTO player_teams (game_id, user_id, team) VALUES ($1, $2, $3)',
-				[gameId, player.userId, player.team],
-			);
-		}
-
-		const problemPool = await fetchProblemPool();
-		for (const taskId of problemPool) {
-			await pool.query(
-				'INSERT INTO game_problems (game_id, task_id) VALUES ($1, $2)',
-				[gameId, taskId],
-			);
-		}
-
-		const endTimer = setTimeout(() => {
-			games.delete(gameId);
-			void pool.query('UPDATE game SET ended_at = NOW() WHERE game_id = $1', [gameId]).catch((err: unknown) => {
-				console.error('[game-service] failed to persist game end', err);
-			});
-		}, GAME_DURATION_MS);
-		endTimer.unref?.();
-
-		games.set(gameId, {
+		const game: GameState = {
 			gameId,
-			startedAt: Date.now(),
-			endTimer,
+			phase: 'waiting',
+			startedAt: null,
 			scores: { a: 0, b: 0 },
-			players: new Map(players.map((player) => [player.userId, { ...player, connected: false }])),
+			players: new Map(players.map((player) => [player.userId, { ...player, connected: false, left: false }])),
 			problemPool,
 			selections: new Map(),
-		});
+			forfeitVotes: { a: new Set(), b: new Set() },
+			solved: { a: new Set(), b: new Set() },
+			submitting: { a: false, b: false },
+			cooldownUntil: { a: 0, b: 0 },
+			timers: { leave: new Map() },
+		};
+		games.set(gameId, game);
+		for (const listener of createdListeners) listener(game);
 
 		res.status(201).json({ gameId });
 	} catch (err) {
@@ -154,6 +240,25 @@ export async function getGame(req: Request, res: Response, next: NextFunction) {
 	}
 }
 
+// CodeService's answer to POST /solution/:questionId.
+export interface Grading {
+	verdict: string;
+	passed: number;
+	total: number;
+}
+
+// Has CodeService grade a solution. Throws if CodeService fails or can't be
+// reached, so the caller can refuse the submission.
+export async function gradeSubmission(questionId: number, code: string): Promise<Grading> {
+	const response = await fetch(`${CODE_SERVICE_URL}/solution/${questionId}`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ code }),
+	});
+	if (!response.ok) throw new Error(`CodeService answered ${response.status}`);
+	return response.json() as Promise<Grading>;
+}
+
 // Invoked when CodeService reports a scored submission for a player in an
 // active game. Inserts a `submissions` row, recomputes that team's score from
 // the submission's points_awarded, and updates both the in-memory GameState
@@ -167,9 +272,6 @@ export async function getGame(req: Request, res: Response, next: NextFunction) {
 // export async function selectProblem(req: Request, res: Response, next: NextFunction) {}
 // export async function 
 
-// Not an HTTP handler - called by the per-game setTimeout started in
-// createGame (mirrors LobbyService's countdown pattern: server-side timer is
-// the sole authority, never trusted to a client). Sets `ended_at`, persists
-// final scores, tears down the in-memory GameState/timer for this game_id,
-// and emits a final "game:ended" event to the game's socket.io room.
-// async function scheduleGameEnd(gameId: string) {}
+// Ending a game (setting `ended_at`, persisting final scores, tearing down the
+// in-memory GameState and timers, and emitting "game:ended") is `endGame` in
+// src/server.ts, since it's driven by the server-side timers and socket events.
