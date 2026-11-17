@@ -2,6 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { request } from './setup';
 import { pool } from '../src/db';
 import { encryptJwe } from '../src/utils/jwe';
+import { mailer } from '../src/utils/mailer';
 
 describe('GET /', () => {
 	it('returns a welcome message', async () => {
@@ -251,6 +252,168 @@ describe('updateAccount validation and error handling', () => {
 			.patch('/account')
 			.set('Authorization', `Bearer ${badToken}`)
 			.send({ name: 'New Name' });
+		expect(res.status).toBe(500);
+	});
+});
+
+// US5-Task9 (#84). Pseudocode: test/password-reset-test-pseudo.md
+// No real email is sent in these tests: mailer.sendPasswordReset is replaced
+// with a spy, which also lets a test read the link the player would receive.
+
+// Replaces the mailer with a spy that sends nothing.
+function fakeMailer() {
+	return vi.spyOn(mailer, 'sendPasswordReset').mockResolvedValue();
+}
+
+// Asks for a reset link for `email` and returns the link from the (faked) email.
+async function requestResetLink(email: string): Promise<string> {
+	const send = fakeMailer();
+	await request.post('/password/forgot').send({ email });
+	return send.mock.calls[0][1];
+}
+
+// Asks for a reset link and returns just the token in it.
+async function requestResetToken(email: string): Promise<string> {
+	return new URL(await requestResetLink(email)).searchParams.get('token') ?? '';
+}
+
+describe('asking for a password reset link', () => {
+	const email = 'forgot-flow@example.com';
+
+	beforeAll(async () => {
+		await request.post('/signup').send({ email, password: 'correct-horse-battery-staple' });
+	});
+
+	it('US5-Task9 responds 200 for the email of an account', async () => {
+		fakeMailer();
+		const res = await request.post('/password/forgot').send({ email });
+		expect(res.status).toBe(200);
+	});
+
+	it('US5-Task9 sends the reset email to the account\'s address', async () => {
+		const send = fakeMailer();
+		await request.post('/password/forgot').send({ email });
+		// The first argument of the mailer is the address the email goes to.
+		expect(send.mock.calls[0][0]).toBe(email);
+	});
+
+	it('US5-Task9 links to the frontend\'s reset page with a token', async () => {
+		const link = await requestResetLink(email);
+		// The token is 32 random bytes written as 64 hex characters.
+		expect(link).toMatch(/^http:\/\/localhost:3000\/login\/reset\?token=[0-9a-f]{64}$/);
+	});
+
+	it('US5-Task9 responds 200 for an email with no account', async () => {
+		fakeMailer();
+		// Same answer as for a real account, so nobody can probe which emails are registered.
+		const res = await request.post('/password/forgot').send({ email: 'nobody@example.com' });
+		expect(res.status).toBe(200);
+	});
+
+	it('US5-Task9 sends no email when there is no account', async () => {
+		const send = fakeMailer();
+		await request.post('/password/forgot').send({ email: 'nobody@example.com' });
+		expect(send).not.toHaveBeenCalled();
+	});
+
+	it('US5-Task9 answers the same for an email with and without an account', async () => {
+		fakeMailer();
+		const known = await request.post('/password/forgot').send({ email });
+		const unknown = await request.post('/password/forgot').send({ email: 'nobody@example.com' });
+		// Identical bodies give nothing away about which emails are registered.
+		expect(known.body).toEqual(unknown.body);
+	});
+
+	it('US5-Task9 still responds 200 when the email cannot be sent', async () => {
+		// A 500 here would only ever happen for real accounts, revealing that the account exists.
+		vi.spyOn(mailer, 'sendPasswordReset').mockRejectedValue(new Error('mail provider down'));
+		vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const res = await request.post('/password/forgot').send({ email });
+		expect(res.status).toBe(200);
+	});
+
+	it('US5-Task9 stops the first link from working when a second one is requested', async () => {
+		const first = await requestResetToken(email);
+		vi.restoreAllMocks();
+		await requestResetToken(email);
+		const res = await request.post('/password/reset').send({ token: first, newPassword: 'a-brand-new-password' });
+		expect(res.status).toBe(400);
+	});
+
+	it('US5-Task9 responds 400 when no email is given', async () => {
+		const res = await request.post('/password/forgot');
+		expect(res.status).toBe(400);
+	});
+
+	it('US5-Task9 responds 500 when the database fails', async () => {
+		// Make the handler's first query reject, exercising catch(err) -> next(err).
+		vi.spyOn(pool, 'query').mockRejectedValueOnce(new Error('connection lost'));
+		const res = await request.post('/password/forgot').send({ email });
+		expect(res.status).toBe(500);
+	});
+});
+
+describe('choosing a new password with a reset link', () => {
+	const email = 'reset-flow@example.com';
+	const oldPassword = 'correct-horse-battery-staple';
+	const newPassword = 'a-brand-new-password';
+
+	beforeAll(async () => {
+		await request.post('/signup').send({ email, password: oldPassword });
+	});
+
+	it('US5-Task9 responds 200 for the token from the email and a new password', async () => {
+		const token = await requestResetToken(email);
+		const res = await request.post('/password/reset').send({ token, newPassword });
+		expect(res.status).toBe(200);
+	});
+
+	it('US5-Task9 lets the player log in with the new password after a reset', async () => {
+		// The previous test already reset this account's password.
+		const res = await request.post('/login').send({ email, password: newPassword });
+		expect(res.status).toBe(200);
+	});
+
+	it('US5-Task9 no longer accepts the old password after a reset', async () => {
+		const res = await request.post('/login').send({ email, password: oldPassword });
+		expect(res.status).toBe(401);
+	});
+
+	it('US5-Task9 rejects a token that has already been used', async () => {
+		const token = await requestResetToken(email);
+		await request.post('/password/reset').send({ token, newPassword });
+		// Second use of the same link.
+		const res = await request.post('/password/reset').send({ token, newPassword: 'yet-another-password' });
+		expect(res.status).toBe(400);
+	});
+
+	it('US5-Task9 rejects a token that was never issued', async () => {
+		const res = await request.post('/password/reset').send({ token: 'f'.repeat(64), newPassword });
+		expect(res.status).toBe(400);
+	});
+
+	it('US5-Task9 rejects a token older than 30 minutes', async () => {
+		const token = await requestResetToken(email);
+		// Age every outstanding link past its 30 minute life.
+		await pool.query('UPDATE password_resets SET expires_at = now() - interval \'1 minute\'');
+		const res = await request.post('/password/reset').send({ token, newPassword });
+		expect(res.status).toBe(400);
+	});
+
+	it('US5-Task9 rejects a new password under 8 characters', async () => {
+		const token = await requestResetToken(email);
+		const res = await request.post('/password/reset').send({ token, newPassword: 'short' });
+		expect(res.status).toBe(400);
+	});
+
+	it('US5-Task9 responds 400 when no body is given', async () => {
+		const res = await request.post('/password/reset');
+		expect(res.status).toBe(400);
+	});
+
+	it('US5-Task9 responds 500 when the database fails', async () => {
+		vi.spyOn(pool, 'query').mockRejectedValueOnce(new Error('connection lost'));
+		const res = await request.post('/password/reset').send({ token: 'f'.repeat(64), newPassword });
 		expect(res.status).toBe(500);
 	});
 });
