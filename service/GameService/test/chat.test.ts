@@ -14,12 +14,16 @@
 //  - A "chat:send" with text longer than 500 characters should not send "chat:message"
 //  - A "chat:send" with text longer than 500 characters should give the user an error saying "Message too long"
 //
+// GameService should save each accepted team message
+//  - A valid "chat:send" should add one row to "team_messages"
+//
 // The rest of chat-test-pseudo.md is added one test at a time.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EncryptJWT } from 'jose';
 import { io } from 'socket.io-client';
 import type { Socket } from 'socket.io-client';
 import { gameServer, request, socketUrl } from './setup';
+import { pool } from '../src/db';
 import { fakeCodeServiceFetch, sixReadyPlayers } from './fixtures';
 import type { ReadyPlayer } from './fixtures';
 
@@ -181,5 +185,16 @@ describe('team chat message length', () => {
 		// Like game:ban and game:submit, the answer comes back on the event's acknowledgement.
 		const answer = await sockets[0].timeout(2_000).emitWithAck('chat:send', { text: 'a'.repeat(501) });
 		expect(answer).toEqual({ error: 'Message too long' });
+	});
+});
+
+describe('saving team chat messages', () => {
+	it('adds one row to team_messages for a valid chat:send', async () => {
+		// The message is saved before it is sent out, so once the teammate has it the row exists.
+		const teammate = nextEvent<ChatMessage>(sockets[1], 'chat:message');
+		sockets[0].emit('chat:send', { text: 'hello team' });
+		await teammate;
+		const { rows } = await pool.query('SELECT COUNT(*)::int AS count FROM team_messages WHERE game_id = $1', [gameId]);
+		expect(rows[0].count).toBe(1);
 	});
 });
