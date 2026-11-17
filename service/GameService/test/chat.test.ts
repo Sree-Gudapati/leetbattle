@@ -1,0 +1,116 @@
+// US-3-T-2: team chat over the GameService socket
+// All tests use a fresh game with at least two players on each team.
+// All players must be confirmed to be connected to the GameService before
+// running any tests, and no team is marked as left.
+//
+// GameService should deliver a team chat message to the sender's team
+//  - A player's "chat:send" should be delivered as a "chat:message" to every connected teammate
+//
+// The rest of chat-test-pseudo.md is added one test at a time.
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EncryptJWT } from 'jose';
+import { io } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
+import { gameServer, request, socketUrl } from './setup';
+import { fakeCodeServiceFetch, sixReadyPlayers } from './fixtures';
+import type { ReadyPlayer } from './fixtures';
+
+// Mirrors the JWE session tokens AuthService issues (same as socket.test.ts):
+// encrypted with the shared SECRET, carrying the account's id/email.
+const SECRET = 'local-test-secret-'.padEnd(64, 'x');
+
+// The payload GameService sends on `chat:message` (see the US-3-T-2 spec).
+interface ChatMessage {
+	id: string;
+	userId: string;
+	displayName: string;
+	team: 'a' | 'b';
+	text: string;
+	sentAt: string;
+}
+
+let clients: Socket[] = [];
+let players: ReadyPlayer[];
+let gameId: string;
+// Every player's socket, in roster order: 0-2 are team a, 3-5 are team b.
+let sockets: Socket[];
+
+async function tokenFor(userId: string): Promise<string> {
+	return new EncryptJWT({ id: userId, email: `${userId}@example.test` })
+		.setProtectedHeader({ alg: 'dir', enc: 'A256CBC-HS512' })
+		.setIssuedAt()
+		.setExpirationTime('5m')
+		.encrypt(new TextEncoder().encode(SECRET));
+}
+
+// Resolves with the next `event` the socket receives.
+function nextEvent<T>(socket: Socket, event: string): Promise<T> {
+	return new Promise((resolve, reject) => {
+		const timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${event}`)), 2_000);
+		socket.once(event, (value: T) => {
+			clearTimeout(timeout);
+			resolve(value);
+		});
+	});
+}
+
+// Connects `userId` to `gameIdToJoin` and resolves once the server has sent
+// their first `game:state`, i.e. once they are in their game and team rooms.
+async function joinGame(userId: string, gameIdToJoin: string): Promise<Socket> {
+	const socket = io(socketUrl(), {
+		autoConnect: false,
+		reconnection: false,
+		transports: ['websocket'],
+		auth: { token: await tokenFor(userId), gameId: gameIdToJoin },
+	});
+	clients.push(socket);
+	const joined = nextEvent(socket, 'game:state');
+	socket.connect();
+	await joined;
+	return socket;
+}
+
+// Waits until the server has processed every client disconnect, so one
+// test's sockets are gone before the next test starts.
+async function waitForServerSockets(count: number): Promise<void> {
+	const deadline = Date.now() + 2_000;
+	while (gameServer.io.sockets.sockets.size !== count) {
+		if (Date.now() > deadline) throw new Error('Timed out waiting for sockets to close');
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+}
+
+beforeAll(() => {
+	process.env.SECRET = SECRET;
+	// Creating a game asks CodeService for problems; stand in for it.
+	vi.stubGlobal('fetch', fakeCodeServiceFetch());
+});
+
+// A fresh 3v3 game per test with every player connected.
+beforeEach(async () => {
+	players = sixReadyPlayers();
+	const res = await request.put('/game').send({ players });
+	gameId = res.body.gameId;
+	sockets = [];
+	for (const player of players) sockets.push(await joinGame(player.userId, gameId));
+});
+
+afterEach(async () => {
+	for (const client of clients) client.disconnect();
+	clients = [];
+	await waitForServerSockets(0);
+});
+
+afterAll(() => {
+	vi.unstubAllGlobals();
+});
+
+describe('team chat delivery', () => {
+	it('delivers a chat:send as a chat:message to every connected teammate', async () => {
+		// Player 0 (team a) sends; players 1 and 2 are their teammates.
+		const teammates = [nextEvent<ChatMessage>(sockets[1], 'chat:message'), nextEvent<ChatMessage>(sockets[2], 'chat:message')];
+		sockets[0].emit('chat:send', { text: 'hello team' });
+		const received = await Promise.all(teammates);
+		expect(received.map((message) => message.text)).toEqual(['hello team', 'hello team']);
+	});
+});
