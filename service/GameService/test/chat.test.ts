@@ -12,6 +12,7 @@
 // GameService should limit message text
 //  - A "chat:send" with no more than 500 characters should be delivered
 //  - A "chat:send" with text longer than 500 characters should not send "chat:message"
+//  - A "chat:send" with text longer than 500 characters should give the user an error saying "Message too long"
 //
 // The rest of chat-test-pseudo.md is added one test at a time.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -174,5 +175,11 @@ describe('team chat message length', () => {
 		sockets[0].emit('chat:send', { text: 'follow-up' });
 		await followUp;
 		expect(received).toEqual(['follow-up']);
+	});
+
+	it('answers a chat:send longer than 500 characters with "Message too long"', async () => {
+		// Like game:ban and game:submit, the answer comes back on the event's acknowledgement.
+		const answer = await sockets[0].timeout(2_000).emitWithAck('chat:send', { text: 'a'.repeat(501) });
+		expect(answer).toEqual({ error: 'Message too long' });
 	});
 });
