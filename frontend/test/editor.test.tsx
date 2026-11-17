@@ -39,6 +39,14 @@ vi.mock('next/navigation', () => ({
 	useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
 }));
 
+// The scoreboard has its own tests (scoreboard.test.tsx). Here it gets an empty
+// match so its submission verdicts ("Accepted") do not collide with the
+// editor's own verdict text that these tests look up.
+vi.mock('../app/editor/match-context', async (importOriginal) => ({
+	...(await importOriginal<typeof import('../app/editor/match-context')>()),
+	useMatch: () => ({ scores: { a: 0, b: 0 }, secondsLeft: 0, submissions: [] }),
+}));
+
 import EditorPage from '../app/editor/page';
 
 const CODE_URL = 'http://127.0.0.1:4001';
