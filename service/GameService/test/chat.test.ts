@@ -7,6 +7,7 @@
 //  - A player's "chat:send" should be delivered as a "chat:message" to every connected teammate
 //  - The sender should receive their own "chat:message"
 //  - A "chat:message" should carry the message id, sender's user id, display name, team, text and sent time
+//  - A player on the other team should not receive the "chat:message"
 //
 // The rest of chat-test-pseudo.md is added one test at a time.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -134,5 +135,18 @@ describe('team chat delivery', () => {
 			text: 'hello team',
 			sentAt: expect.any(String),
 		});
+	});
+
+	it('does not deliver a chat:message to a player on the other team', async () => {
+		// Player 3 is on team b; record anything they receive.
+		const otherTeam: ChatMessage[] = [];
+		sockets[3].on('chat:message', (message: ChatMessage) => otherTeam.push(message));
+		const teammate = nextEvent<ChatMessage>(sockets[1], 'chat:message');
+		sockets[0].emit('chat:send', { text: 'hello team' });
+		// Once the teammate has the message, give the other team the same time
+		// again to receive one if it was (wrongly) sent to them too.
+		await teammate;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(otherTeam).toEqual([]);
 	});
 });
