@@ -2,7 +2,11 @@
 import { useEditor } from '../context';
 
 export default function ResultsPanel() {
-	const { submitResult } = useEditor();
+	const { submitResult, submitError } = useEditor();
+
+	if (submitError) {
+		return <p role="alert" className="border-b border-line px-4 py-2 text-sm text-danger">{submitError}</p>;
+	}
 
 	if (!submitResult) {
 		return null;

@@ -6,6 +6,8 @@ import type { Socket } from 'socket.io-client';
 import { getToken } from '../login/controller';
 import { useAuth } from '../login/context';
 import type { TeamId } from '../lobby/socket-context';
+import type { SubmitResult } from '../editor/controller';
+import type { EditorWorkspace } from '../editor/context';
 
 export interface GamePlayer {
 	userId: string;
@@ -71,8 +73,24 @@ interface GameSocketContextValue {
 	forfeit: () => void;
 	// Bans one problem from the pool during the ban phase.
 	ban: (_questionId: number) => void;
+	// Has the game grade a solution; rejects with a readable message if refused.
+	submit: (_questionId: number, _code: string) => Promise<SubmitResult>;
+	// Sends the player's editor for one question to their own team.
+	shareCode: (_questionId: number, _workspace: EditorWorkspace) => void;
 	clearError: () => void;
 }
+
+// How long to wait for the game to grade a submission (CodeService can be slow).
+const SUBMIT_TIMEOUT_MS = 30_000;
+
+// What each reason GameService refuses a submission with means to the player.
+const SUBMIT_REFUSALS: Record<string, string> = {
+	cooldown: 'Your team just submitted. Wait a few seconds before submitting again.',
+	'team-busy': 'A teammate\'s submission is still being graded.',
+	'not-playing': 'The match isn\'t running, so submissions are closed.',
+	'unknown-problem': 'This question isn\'t part of the match.',
+	'grading-failed': 'Your submission couldn\'t be graded. Try again.',
+};
 
 const GameSocketContext = createContext<GameSocketContextValue | null>(null);
 const GAME_URL = process.env.NEXT_PUBLIC_GAME_URL ?? 'http://localhost:4004';
@@ -145,9 +163,21 @@ export function GameSocketProvider({ children }: { children: ReactNode }) {
 		socketRef.current?.socket.emit('game:ban', { questionId });
 	}, []);
 
+	const submit = useCallback(async (questionId: number, code: string): Promise<SubmitResult> => {
+		const socket = socketRef.current?.socket;
+		if (!socket) throw new Error(SUBMIT_REFUSALS['not-playing']);
+		const response = await socket.timeout(SUBMIT_TIMEOUT_MS).emitWithAck('game:submit', { questionId, code }) as SubmitResult | { error: string };
+		if ('error' in response) throw new Error(SUBMIT_REFUSALS[response.error] ?? SUBMIT_REFUSALS['grading-failed']);
+		return response;
+	}, []);
+
+	const shareCode = useCallback((questionId: number, workspace: EditorWorkspace) => {
+		socketRef.current?.socket.emit('game:code', { questionId, workspace });
+	}, []);
+
 	const clearError = useCallback(() => setError(null), []);
 	return (
-		<GameSocketContext.Provider value={{ socket, connected, game, result, error, connect, forfeit, ban, clearError }}>
+		<GameSocketContext.Provider value={{ socket, connected, game, result, error, connect, forfeit, ban, submit, shareCode, clearError }}>
 			{children}
 		</GameSocketContext.Provider>
 	);
