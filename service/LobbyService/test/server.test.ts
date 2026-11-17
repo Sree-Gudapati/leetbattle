@@ -1,9 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import { EncryptJWT } from 'jose';
 import { io } from 'socket.io-client';
 import type { Socket } from 'socket.io-client';
 import { createLobbyService } from '../src/server';
 import type { LobbySnapshot } from '../src/lobby-state';
+
+const GAME_SERVICE_URL = 'http://localhost:4004';
 
 const SECRET = 'local-test-secret-'.padEnd(64, 'x');
 let connectedClients: Socket[] = [];
@@ -288,6 +291,90 @@ describe('LobbyService socket lifecycle', () => {
 		player.disconnect();
 		expect((await afterExpiry).playerCount).toBe(0);
 	});
+});
+
+async function connectReadyRoster(prefix: string): Promise<Socket[]> {
+	const clients = await Promise.all(Array.from({ length: 6 }, (_, index) => connectUser(`${prefix}-${index}`)));
+	for (const [index, client] of clients.entries()) {
+		await emitAndWaitForState(client, 'lobby:join', undefined, (state) => state.playerCount === index + 1);
+	}
+	for (const client of clients.slice(0, 3)) {
+		const userId = `${prefix}-${clients.indexOf(client)}`;
+		await emitAndWaitForState(client, 'lobby:join-team', 'a', (state) => state.players.find((player) => player.userId === userId)?.team === 'a');
+	}
+	for (const client of clients.slice(3, 6)) {
+		const userId = `${prefix}-${clients.indexOf(client)}`;
+		await emitAndWaitForState(client, 'lobby:join-team', 'b', (state) => state.players.find((player) => player.userId === userId)?.team === 'b');
+	}
+	return clients;
+}
+
+async function readyUpAll(clients: Socket[]): Promise<void> {
+	for (const [index, client] of clients.entries()) {
+		await emitAndWaitForState(client, 'lobby:set-ready', true, (state) => state.readyCount === index + 1);
+	}
+}
+
+describe('Lobbyservice makes request to GameService', () => {
+	let gameServiceFetch: Mock;
+
+	// LobbyService's own tests never otherwise touch fetch - only this
+	// describe needs the stub, so it's scoped here rather than at the
+	// top-level beforeEach/afterEach that every other test shares.
+	beforeEach(() => {
+		gameServiceFetch = vi.fn(() => Promise.resolve({
+			ok: true,
+			json: () => Promise.resolve({ gameId: 'stub-game-id' }),
+		} as Response));
+		vi.stubGlobal('fetch', gameServiceFetch);
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it('makes a request with correct body', async () => {
+		const clients = await connectReadyRoster('request');
+
+		const readinessEvents = Promise.all(clients.map((client) => nextEvent(client, 'lobby:ready-for-match', 7_000)));
+		await readyUpAll(clients);
+		await readinessEvents;
+
+		expect(gameServiceFetch).toHaveBeenCalledWith(
+			`${GAME_SERVICE_URL}/game`,
+			expect.objectContaining({
+				method: 'PUT',
+				body: JSON.stringify({
+					players: Array.from({ length: 6 }, (_, index) => ({
+						userId: `request-${index}`,
+						displayName: `Player request-${index}`,
+						team: index < 3 ? 'a' : 'b',
+					})),
+				}),
+			}),
+		);
+	}, 10_000);
+
+	it('emits the new games id over the websocket once GameService responds', async () => {
+		const clients = await connectReadyRoster('gameid');
+
+		const gameStarted = nextEvent<{ gameId: string }>(clients[0], 'lobby:game-started', 7_000);
+		await readyUpAll(clients);
+
+		expect((await gameStarted).gameId).toBe('stub-game-id');
+	}, 10_000);
+
+	it('closes each player\'s socket once the game starts', async () => {
+		const clients = await connectReadyRoster('close');
+
+		const disconnections = Promise.all(clients.map((client) => new Promise<void>((resolve) => {
+			client.once('disconnect', () => resolve());
+		})));
+		await readyUpAll(clients);
+		await disconnections;
+
+		expect(clients.every((client) => client.connected)).toBe(false);
+	}, 10_000);
 });
 
 function createUnauthenticatedClient(): Socket {
