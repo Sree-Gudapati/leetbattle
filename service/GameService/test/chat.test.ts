@@ -27,6 +27,9 @@
 //  - After "game:ended", a "chat:send" should not be saved to "team_messages"
 //  - After "game:ended", a "chat:send" should send no "chat:message"
 //
+// GameService should keep chat separate between games
+//  - When two games are running, a "chat:send" in one game should not reach the players of the other game
+//
 // The rest of chat-test-pseudo.md is added one test at a time.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EncryptJWT } from 'jose';
@@ -148,6 +151,16 @@ async function waitForServerSockets(count: number): Promise<void> {
 		if (Date.now() > deadline) throw new Error('Timed out waiting for sockets to close');
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
+}
+
+// A second fresh 3v3 game, running at the same time as the test's game, with
+// every player connected. Its sockets are in roster order like `sockets`.
+async function secondGame(): Promise<{ gameId: string; players: ReadyPlayer[]; sockets: Socket[] }> {
+	const roster = sixReadyPlayers();
+	const res = await request.put('/game').send({ players: roster });
+	const joined: Socket[] = [];
+	for (const player of roster) joined.push(await joinGame(player.userId, res.body.gameId));
+	return { gameId: res.body.gameId, players: roster, sockets: joined };
 }
 
 // A row of team_messages, as pg returns it.
@@ -321,6 +334,22 @@ describe('team chat after the game has ended', () => {
 		const chatMessages = broadcast.mock.calls.filter(([packet]) => packet.data?.[0] === 'chat:message');
 		broadcast.mockRestore();
 		expect(chatMessages).toEqual([]);
+	});
+});
+
+describe('team chat with two games running', () => {
+	it('does not deliver a chat:send in one game to the players of the other game', async () => {
+		const other = await secondGame();
+		// Record anything any player of the other game receives.
+		const otherGame: ChatMessage[] = [];
+		for (const socket of other.sockets) socket.on('chat:message', (message: ChatMessage) => otherGame.push(message));
+		const teammate = nextEvent<ChatMessage>(sockets[1], 'chat:message');
+		sockets[0].emit('chat:send', { text: 'hello team' });
+		// Once the teammate has the message, give the other game the same time
+		// again to receive one if it was (wrongly) sent to them too.
+		await teammate;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(otherGame).toEqual([]);
 	});
 
 	it('does not save a chat:send sent after game:ended', async () => {
