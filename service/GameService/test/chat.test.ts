@@ -6,6 +6,7 @@
 // GameService should deliver a team chat message to the sender's team
 //  - A player's "chat:send" should be delivered as a "chat:message" to every connected teammate
 //  - The sender should receive their own "chat:message"
+//  - A "chat:message" should carry the message id, sender's user id, display name, team, text and sent time
 //
 // The rest of chat-test-pseudo.md is added one test at a time.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -119,5 +120,19 @@ describe('team chat delivery', () => {
 		const own = nextEvent<ChatMessage>(sockets[0], 'chat:message');
 		sockets[0].emit('chat:send', { text: 'hello team' });
 		expect((await own).text).toBe('hello team');
+	});
+
+	it('sends the message id, sender\'s user id, display name, team, text and sent time on chat:message', async () => {
+		const received = nextEvent<ChatMessage>(sockets[1], 'chat:message');
+		sockets[0].emit('chat:send', { text: 'hello team' });
+		// The id and sent time are made by the server, so only their type is known here.
+		expect(await received).toEqual({
+			id: expect.any(String),
+			userId: players[0].userId,
+			displayName: players[0].displayName,
+			team: 'a',
+			text: 'hello team',
+			sentAt: expect.any(String),
+		});
 	});
 });
