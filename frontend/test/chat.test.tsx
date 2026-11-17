@@ -266,4 +266,12 @@ describe('showing comments the server delivers', () => {
 
 		expect(screen.queryAllByText('Try a hash map')).toHaveLength(1);
 	});
+
+	it('US-3-T-2 shows the name of the player who sent an incoming chat:message', () => {
+		const fake = renderChatWithSocket();
+
+		act(() => fake.fire('chat:message', fromGrace));
+
+		expect(screen.getByRole('listitem').textContent).toContain('Grace');
+	});
 });
