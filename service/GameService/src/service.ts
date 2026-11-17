@@ -133,10 +133,7 @@ export async function createGame(req: Request, res: Response, next: NextFunction
 }
 
 // Fetches a single game's current state for the /game/[gameId] page (initial
-// load or reconnect after a dropped socket). Prefers the in-memory GameState
-// when this game_id is still live (cheap, has the authoritative scores/picks);
-// falls back to a DB read (game + players + player_teams + submissions) once
-// ended_at is set and the in-memory state has been torn down.
+// load or reconnect after a dropped socket)
 export async function getGame(req: Request, res: Response, next: NextFunction) {
 	const { id: userId } = req.params;
 	try {

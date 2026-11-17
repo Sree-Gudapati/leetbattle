@@ -93,6 +93,10 @@ export function createLobbyService(options: ServerOptions = {}) {
 							team: player.team,
 						})),
 					}),
+				}).then(async (response) => {
+					const { gameId } = await response.json() as { gameId: string };
+					io.to(LOBBY_ROOM).emit('lobby:game-started', { gameId });
+					io.in(LOBBY_ROOM).disconnectSockets(true);
 				}).catch((error: unknown) => {
 					console.error('[lobby-service] failed to notify game-service of match start', error);
 				});

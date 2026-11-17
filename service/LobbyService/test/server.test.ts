@@ -186,6 +186,28 @@ describe('LobbyService socket lifecycle', () => {
 	});
 });
 
+async function connectReadyRoster(prefix: string): Promise<Socket[]> {
+	const clients = await Promise.all(Array.from({ length: 6 }, (_, index) => connectUser(`${prefix}-${index}`)));
+	for (const [index, client] of clients.entries()) {
+		await emitAndWaitForState(client, 'lobby:join', undefined, (state) => state.playerCount === index + 1);
+	}
+	for (const client of clients.slice(0, 3)) {
+		const userId = `${prefix}-${clients.indexOf(client)}`;
+		await emitAndWaitForState(client, 'lobby:join-team', 'a', (state) => state.players.find((player) => player.userId === userId)?.team === 'a');
+	}
+	for (const client of clients.slice(3, 6)) {
+		const userId = `${prefix}-${clients.indexOf(client)}`;
+		await emitAndWaitForState(client, 'lobby:join-team', 'b', (state) => state.players.find((player) => player.userId === userId)?.team === 'b');
+	}
+	return clients;
+}
+
+async function readyUpAll(clients: Socket[]): Promise<void> {
+	for (const [index, client] of clients.entries()) {
+		await emitAndWaitForState(client, 'lobby:set-ready', true, (state) => state.readyCount === index + 1);
+	}
+}
+
 describe('Lobbyservice makes request to GameService', () => {
 	let gameServiceFetch: Mock;
 
@@ -204,36 +226,13 @@ describe('Lobbyservice makes request to GameService', () => {
 		vi.unstubAllGlobals();
 	});
 
-	// 10s timeout: default (5000ms) is too tight for the flat 5000ms match
-	// countdown plus this test's connect/join/team-join setup - see the
-	// pre-existing 'enforces team capacity' test above, which hits the same
-	// ceiling on its own and is out of scope for this change.
 	it('makes a request with correct body', async () => {
-		// connect 6 players, split them 3/3 across teams, and ready them all
-		// up - mirrors the 'enforces team capacity' test's setup above, since
-		// that's the same condition that fires lobby:ready-for-match.
-		const clients = await Promise.all(Array.from({ length: 6 }, (_, index) => connectUser(`request-${index}`)));
-		for (const [index, client] of clients.entries()) {
-			await emitAndWaitForState(client, 'lobby:join', undefined, (state) => state.playerCount === index + 1);
-		}
-		for (const client of clients.slice(0, 3)) {
-			const userId = `request-${clients.indexOf(client)}`;
-			await emitAndWaitForState(client, 'lobby:join-team', 'a', (state) => state.players.find((player) => player.userId === userId)?.team === 'a');
-		}
-		for (const client of clients.slice(3, 6)) {
-			const userId = `request-${clients.indexOf(client)}`;
-			await emitAndWaitForState(client, 'lobby:join-team', 'b', (state) => state.players.find((player) => player.userId === userId)?.team === 'b');
-		}
+		const clients = await connectReadyRoster('request');
 
-		// start a match: readying up all six players fires the same
-		// countdown -> lobby:ready-for-match path the test above exercises.
 		const readinessEvents = Promise.all(clients.map((client) => nextEvent(client, 'lobby:ready-for-match', 7_000)));
-		for (const [index, client] of clients.entries()) {
-			await emitAndWaitForState(client, 'lobby:set-ready', true, (state) => state.readyCount === index + 1);
-		}
+		await readyUpAll(clients);
 		await readinessEvents;
 
-		// should send a correct request to gameservice url with correct body
 		expect(gameServiceFetch).toHaveBeenCalledWith(
 			`${GAME_SERVICE_URL}/game`,
 			expect.objectContaining({
@@ -247,6 +246,27 @@ describe('Lobbyservice makes request to GameService', () => {
 				}),
 			}),
 		);
+	}, 10_000);
+
+	it('emits the new games id over the websocket once GameService responds', async () => {
+		const clients = await connectReadyRoster('gameid');
+
+		const gameStarted = nextEvent<{ gameId: string }>(clients[0], 'lobby:game-started', 7_000);
+		await readyUpAll(clients);
+
+		expect((await gameStarted).gameId).toBe('stub-game-id');
+	}, 10_000);
+
+	it('closes each player\'s socket once the game starts', async () => {
+		const clients = await connectReadyRoster('close');
+
+		const disconnections = Promise.all(clients.map((client) => new Promise<void>((resolve) => {
+			client.once('disconnect', () => resolve());
+		})));
+		await readyUpAll(clients);
+		await disconnections;
+
+		expect(clients.every((client) => client.connected)).toBe(false);
 	}, 10_000);
 });
 
