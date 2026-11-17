@@ -22,3 +22,26 @@
  //  - The socket should be opened with the login token and the gameId in its auth payload
  //  - A "game:state" event from the server should be exposed to the page
  //  - When the server rejects the connection with "not-in-game", a "not a player in this match" error should be exposed
+
+ // Game page should show the match waiting for its players
+ //  - While the game is waiting with 2 of 6 players connected, "Waiting for players (2/6)" should be displayed
+
+ // Players should be able to forfeit from the top bar
+ //  - During a match, a "Forfeit" button should appear in the top bar
+ //  - The Forfeit button should sit to the left of the account menu button
+ //  - While the game is waiting for players, the Forfeit button should not be shown
+ //  - Clicking Forfeit should open a confirmation dialog
+ //  - Clicking Cancel should close the dialog without forfeiting
+ //  - Confirming should send the forfeit to the game
+ //  - After confirming, the Forfeit button should be disabled
+
+ // Game page should show the result once the game ends
+ //  - When team b wins, "Team 2 wins" should be displayed
+ //  - When the game was won by forfeit, "by forfeit" should be displayed
+ //  - The result screen should have a "Back to lobby" link
+ //  - When the game ends in a draw, "Draw" should be displayed
+ //  - Once the game has ended, the Forfeit button should not be shown
+
+ // Game socket context should handle the end of the game
+ //  - A "game:ended" event from the server should expose the result to the page
+ //  - Forfeiting should send a "game:forfeit" event to the server

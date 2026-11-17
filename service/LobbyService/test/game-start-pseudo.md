@@ -11,3 +11,8 @@
  //  - When GameService is unreachable, every lobby client should receive a "game-start-failed" error
  //  - When the game fails to start, every player's ready state should be reset
  //  - After a failed start, players can ready up again and the lobby should call GameService a second time
+
+ // Lobby should open for a new group once a match starts
+ //  - Once the game starts, the match's players should be removed from the lobby
+ //  - Once the game starts, someone watching the lobby should stay connected
+ //  - Once the game starts, a new group of players should be able to fill the lobby and start another match

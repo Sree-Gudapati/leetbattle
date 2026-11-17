@@ -201,6 +201,14 @@ export class LobbyState {
 		return this.snapshot();
 	}
 
+	// Releases the seats of players who have moved on to a match, so the lobby
+	// opens for a new group straight away.
+	async removePlayers(userIds: string[]): Promise<void> {
+		for (const userId of userIds) await this.removeMember(userId);
+		this.resetReadiness();
+		this.onChange();
+	}
+
 	// Clears every member's ready flag, e.g. after a failed match start, so the
 	// lobby can count down again from scratch.
 	unreadyAll(): void {

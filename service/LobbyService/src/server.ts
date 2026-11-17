@@ -67,8 +67,10 @@ export function createLobbyService(options: ServerOptions = {}) {
 		countdownStartedAt = null;
 	};
 	// Asks GameService to create the match for the ready players. On success
-	// every lobby client hears `lobby:game-started` with the gameId, and the
-	// lobby sockets are closed, since players move to GameService's socket.
+	// every lobby client hears `lobby:game-started` with the gameId, the
+	// players' lobby sockets are closed (they move to GameService's socket)
+	// and their seats are released, so a new group can start another match.
+	// Anyone only watching the lobby stays connected.
 	// `matchStarted` is already set by the countdown, so a second countdown
 	// can't fire a duplicate call; it is cleared again if GameService fails,
 	// so the players can ready up and retry.
@@ -85,7 +87,9 @@ export function createLobbyService(options: ServerOptions = {}) {
 			if (!response.ok) throw new Error(`GameService responded with status ${response.status}`);
 			const { gameId } = await response.json() as { gameId: string };
 			io.to(LOBBY_ROOM).emit('lobby:game-started', { gameId });
-			io.in(LOBBY_ROOM).disconnectSockets(true);
+			for (const { userId } of players) socketsByUserId.get(userId)?.disconnect(true);
+			await getLobby().removePlayers(players.map(({ userId }) => userId));
+			matchStarted = false;
 		} catch (error) {
 			console.error('[lobby-service] could not start the game', error);
 			matchStarted = false;

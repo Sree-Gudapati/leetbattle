@@ -2,6 +2,9 @@
 //  - The socket should be opened with the login token and the gameId in its auth payload
 //  - A "game:state" event from the server should be exposed to the page
 //  - When the server rejects the connection with "not-in-game", a "not a player in this match" error should be exposed
+// Game socket context should handle the end of the game
+//  - A "game:ended" event from the server should expose the result to the page
+//  - Forfeiting should send a "game:forfeit" event to the server
 import { useEffect } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen } from '@testing-library/react';
@@ -43,7 +46,7 @@ function fakeSocket() {
 
 // A minimal page: joins game-1 on mount and prints what the context exposes.
 function Consumer() {
-	const { connect, game, error } = useGameSocket();
+	const { connect, game, error, result, forfeit } = useGameSocket();
 	useEffect(() => {
 		connect('game-1');
 	}, [connect]);
@@ -51,6 +54,8 @@ function Consumer() {
 		<div>
 			<span data-testid="game-id">{game?.gameId ?? ''}</span>
 			<span data-testid="error">{error?.message ?? ''}</span>
+			<span data-testid="winner">{result?.winner ?? ''}</span>
+			<button onClick={forfeit}>Forfeit</button>
 		</div>
 	);
 }
@@ -100,5 +105,21 @@ describe('game socket context', () => {
 		act(() => fake.fire('connect_error', new Error('not-in-game')));
 
 		expect(screen.getByTestId('error').textContent).toBe('You are not a player in this match.');
+	});
+
+	it('US-6-T-2 exposes the result the server sends when the game ends', () => {
+		renderConsumer();
+
+		act(() => fake.fire('game:ended', { winner: 'b', reason: 'forfeit' }));
+
+		expect(screen.getByTestId('winner').textContent).toBe('b');
+	});
+
+	it('US-6-T-2 sends game:forfeit to the server when forfeiting', () => {
+		renderConsumer();
+
+		act(() => screen.getByRole('button', { name: 'Forfeit' }).click());
+
+		expect(fake.socket.emit).toHaveBeenCalledWith('game:forfeit');
 	});
 });

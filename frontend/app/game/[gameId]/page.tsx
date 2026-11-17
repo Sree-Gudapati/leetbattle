@@ -10,12 +10,23 @@ import PageLoader from '../../_shared/page-loader';
 import type { TeamId } from '../../lobby/socket-context';
 import { titleFromTaskId } from '../../editor/components/question-panel';
 import { GameSocketProvider, useGameSocket } from '../socket-context';
-import type { GamePlayer } from '../socket-context';
+import type { GamePlayer, GameResult } from '../socket-context';
 
 const TEAMS: { id: TeamId; name: string; nameColor: string }[] = [
 	{ id: 'a', name: 'Team 1', nameColor: 'text-primary' },
 	{ id: 'b', name: 'Team 2', nameColor: 'text-secondary' },
 ];
+
+const teamName = (team: TeamId) => TEAMS.find((entry) => entry.id === team)?.name ?? '';
+
+// How the result screen explains why the game ended.
+const END_REASONS: Record<GameResult['reason'], string> = {
+	forfeit: 'by forfeit',
+	disconnect: 'by disconnect: the other team left the match',
+	time: 'when time ran out',
+};
+
+const BUTTON = 'lb-press inline-flex min-h-9 items-center justify-center rounded-lg px-4 text-sm font-semibold disabled:cursor-not-allowed';
 
 // 1200 -> "20:00"
 function formatClock(totalSeconds: number): string {
@@ -26,14 +37,15 @@ function formatClock(totalSeconds: number): string {
 
 // Counts down locally from the server's last `secondsRemaining`; every new
 // game state resyncs it, so clients never drift far from the server's clock.
-function Clock({ seconds }: { seconds: number }) {
+function Clock({ seconds, running }: { seconds: number; running: boolean }) {
 	const [left, setLeft] = useState(seconds);
 
 	useEffect(() => {
 		setLeft(seconds);
+		if (!running) return;
 		const timer = setInterval(() => setLeft((value) => Math.max(0, value - 1)), 1_000);
 		return () => clearInterval(timer);
-	}, [seconds]);
+	}, [seconds, running]);
 
 	return <span className="font-mono text-[28px] font-bold leading-none text-ink">{formatClock(left)}</span>;
 }
@@ -49,7 +61,9 @@ function Roster({ team, players, userId }: { team: typeof TEAMS[number]; players
 							<span className="text-[15px] font-medium">{player.displayName}</span>
 							{player.userId === userId && <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-muted">You</span>}
 						</span>
-						{!player.connected && <span className="text-[13px] font-medium text-muted">Reconnecting…</span>}
+						{player.left
+							? <span className="text-[13px] font-medium text-muted">Left</span>
+							: !player.connected && <span className="text-[13px] font-medium text-muted">Reconnecting…</span>}
 					</li>
 				))}
 			</ul>
@@ -57,11 +71,60 @@ function Roster({ team, players, userId }: { team: typeof TEAMS[number]; players
 	);
 }
 
+// The top-bar button plus its confirmation. Once sent it stays disabled: the
+// team forfeits when every connected teammate has confirmed.
+function ForfeitControl({ onForfeit }: { onForfeit: () => void }) {
+	const [confirming, setConfirming] = useState(false);
+	const [sent, setSent] = useState(false);
+
+	return (
+		<>
+			<button onClick={() => setConfirming(true)} disabled={sent} className={`${BUTTON} border border-danger/40 text-danger hover:bg-danger/10 disabled:opacity-50 disabled:hover:bg-transparent`}>
+				Forfeit
+			</button>
+			{confirming && (
+				<div className="fixed inset-0 z-40 flex items-center justify-center bg-page/70 px-4">
+					<div role="dialog" aria-modal="true" aria-labelledby="forfeit-title" className="flex w-full max-w-sm flex-col gap-4 rounded-xl border border-line bg-surface p-6 shadow-lg">
+						<h2 id="forfeit-title" className="text-lg font-bold">Forfeit the match?</h2>
+						<p className="text-sm text-muted">Your team forfeits once every connected teammate confirms. This can&apos;t be undone.</p>
+						<div className="flex justify-end gap-3">
+							<button autoFocus onClick={() => setConfirming(false)} className={`${BUTTON} border border-line text-ink hover:bg-raised`}>Cancel</button>
+							<button
+								onClick={() => {
+									onForfeit();
+									setSent(true);
+									setConfirming(false);
+								}}
+								className={`${BUTTON} bg-danger text-page`}
+							>
+								Forfeit
+							</button>
+						</div>
+					</div>
+				</div>
+			)}
+		</>
+	);
+}
+
+function ResultScreen({ result }: { result: GameResult }) {
+	return (
+		<section className="flex flex-col items-start gap-4 rounded-xl border border-line bg-surface p-8">
+			<h2 className="text-4xl font-extrabold tracking-[-0.035em]">{result.winner ? `${teamName(result.winner)} wins` : 'Draw'}</h2>
+			<p className="text-[15px] text-muted">
+				{result.winner ? `Won ${END_REASONS[result.reason]}.` : 'Time ran out with the scores level.'}
+			</p>
+			<Link href="/lobby" className={`${BUTTON} min-h-11 bg-primary text-on-primary`}>Back to lobby</Link>
+		</section>
+	);
+}
+
 function GameContent() {
 	const { gameId } = useParams<{ gameId: string }>();
 	const { user } = useAuth();
-	const { connected, game, error, connect } = useGameSocket();
+	const { connected, game, result, error, connect, forfeit } = useGameSocket();
 	const joined = connected && game !== null;
+	const playing = joined && game.phase === 'playing' && !result;
 
 	useEffect(() => {
 		connect(gameId);
@@ -70,33 +133,41 @@ function GameContent() {
 	return (
 		<div className="flex min-h-screen flex-col bg-page font-sans text-ink">
 			<PageLoader variant="pen" />
-			<HomeTopBar />
+			<HomeTopBar actions={playing && <ForfeitControl onForfeit={forfeit} />} />
 			<main className="flex-1 px-5 pt-12 pb-16">
 				<div className="mx-auto flex max-w-[1040px] flex-col gap-8">
-					<header className="flex flex-wrap items-end justify-between gap-4">
+					<div className="flex flex-wrap items-end justify-between gap-4">
 						<div className="flex flex-col gap-2">
 							<h1 className="text-4xl font-extrabold leading-[1.05] tracking-[-0.035em]">Match</h1>
 							<p className="text-[15px] text-muted">Two teams, the same problems, twenty minutes.</p>
 						</div>
-						{joined && (
+						{joined && !result && (
 							<div className="flex items-center gap-6">
 								<span className="font-mono text-sm font-semibold"><span className="text-primary">{game.scores.a}</span> – <span className="text-secondary">{game.scores.b}</span></span>
-								<Clock seconds={game.secondsRemaining} />
+								<Clock seconds={game.secondsRemaining} running={game.phase === 'playing'} />
 							</div>
 						)}
-					</header>
+					</div>
 
-					{error && (
+					{result && <ResultScreen result={result} />}
+
+					{error && !result && (
 						<div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
 							<span>{error.message}</span>
 							<Link href="/lobby" className="font-semibold underline underline-offset-4">Back to lobby</Link>
 						</div>
 					)}
 
-					{!joined && !error && <p role="status" aria-live="polite" className="text-sm text-muted">Joining match…</p>}
+					{!joined && !error && !result && <p role="status" aria-live="polite" className="text-sm text-muted">Joining match…</p>}
 
-					{joined && (
+					{joined && !result && (
 						<>
+							{game.phase === 'waiting' && (
+								<p role="status" aria-live="polite" className="text-sm text-muted">
+									Waiting for players ({game.players.filter((player) => player.connected).length}/{game.players.length})
+								</p>
+							)}
+
 							<div className="grid gap-5 md:grid-cols-2">
 								{TEAMS.map((team) => (
 									<Roster key={team.id} team={team} players={game.players.filter((player) => player.team === team.id)} userId={user?.id} />

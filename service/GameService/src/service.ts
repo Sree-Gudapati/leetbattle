@@ -27,35 +27,63 @@ export interface GamePlayerState {
 	displayName: string;
 	team: TeamId;
 	connected: boolean;
+	left: boolean; // dropped and didn't reconnect within the window (see src/server.ts)
 }
+
+// waiting: created, waiting for players to connect (the clock hasn't started)
+// playing: the 20-minute clock is running
+// ended:   decided; about to be torn down
+export type GamePhase = 'waiting' | 'playing' | 'ended';
 
 export interface GameState {
 	gameId: string;
-	startedAt: number; // Date.now() at creation; used to compute time remaining
-	endTimer: NodeJS.Timeout; // server-side authority for ending the match - see scheduleGameEnd
+	phase: GamePhase;
+	startedAt: number | null; // Date.now() when play began; used to compute time remaining
 	scores: Record<TeamId, number>; // live counterpart of game.t1_score / t2_score
 	players: Map<string, GamePlayerState>; // keyed by userId
 	problemPool: string[]; // task_ids assigned to this game (game_problems)
 	selections: Map<string, string>; // userId -> task_id currently being worked (player_selections)
+	forfeitVotes: Record<TeamId, Set<string>>; // userIds on each team who chose to forfeit
+	// Server-side timers driving the match - all owned by src/server.ts.
+	timers: {
+		join?: NodeJS.Timeout; // ends the join wait
+		end?: NodeJS.Timeout; // ends the match when the clock runs out
+		leave: Map<string, NodeJS.Timeout>; // userId -> ends that player's reconnect window
+	};
 }
 
 const games = new Map<string, GameState>();
+const createdListeners = new Set<(_game: GameState) => void>();
 
 // The live state for a game this process started, if it is still running.
 export function findGame(gameId: string): GameState | undefined {
 	return games.get(gameId);
 }
 
+// Stops tracking a game once it has ended.
+export function forgetGame(gameId: string): void {
+	games.delete(gameId);
+}
+
+// Lets the socket server start each new game's timers. Returns an unsubscribe.
+export function onGameCreated(listener: (_game: GameState) => void): () => void {
+	createdListeners.add(listener);
+	return () => createdListeners.delete(listener);
+}
+
 // The wire form of a GameState for the `game:state` socket event: everything
-// a client needs to render the match, minus the server-only end timer.
+// a client needs to render the match, minus server-only timers and who voted.
 export function serializeGame(game: GameState) {
+	const elapsed = game.startedAt === null ? 0 : Date.now() - game.startedAt;
 	return {
 		gameId: game.gameId,
+		phase: game.phase,
 		startedAt: game.startedAt,
-		secondsRemaining: Math.max(0, Math.ceil((game.startedAt + GAME_DURATION_MS - Date.now()) / 1000)),
+		secondsRemaining: Math.max(0, Math.ceil((GAME_DURATION_MS - elapsed) / 1000)),
 		scores: game.scores,
 		problemPool: game.problemPool,
 		players: [...game.players.values()],
+		forfeitVotes: { a: game.forfeitVotes.a.size, b: game.forfeitVotes.b.size },
 	};
 }
 
@@ -129,7 +157,7 @@ export function getRoot(_req: Request, res: Response) {
 //     matching `players` / `player_teams` rows and `game_problems`, all in one
 //     statement (see SAVE_GAME_SQL)
 //   - creates the in-memory GameState for this game_id (scores, timer, picks)
-//     and starts the match-duration timer (see scheduleGameEnd)
+//     and hands it to the socket server, which runs the join wait and the clock
 // Responds with { gameId } so the frontend can navigate to /game/[gameId].
 export async function createGame(req: Request, res: Response, next: NextFunction) {
 	const body = startGameBodySchema.safeParse(req.body);
@@ -148,23 +176,19 @@ export async function createGame(req: Request, res: Response, next: NextFunction
 		]);
 		const gameId = gameResult.rows[0].game_id;
 
-		const endTimer = setTimeout(() => {
-			games.delete(gameId);
-			void pool.query('UPDATE game SET ended_at = NOW() WHERE game_id = $1', [gameId]).catch((err: unknown) => {
-				console.error('[game-service] failed to persist game end', err);
-			});
-		}, GAME_DURATION_MS);
-		endTimer.unref?.();
-
-		games.set(gameId, {
+		const game: GameState = {
 			gameId,
-			startedAt: Date.now(),
-			endTimer,
+			phase: 'waiting',
+			startedAt: null,
 			scores: { a: 0, b: 0 },
-			players: new Map(players.map((player) => [player.userId, { ...player, connected: false }])),
+			players: new Map(players.map((player) => [player.userId, { ...player, connected: false, left: false }])),
 			problemPool,
 			selections: new Map(),
-		});
+			forfeitVotes: { a: new Set(), b: new Set() },
+			timers: { leave: new Map() },
+		};
+		games.set(gameId, game);
+		for (const listener of createdListeners) listener(game);
 
 		res.status(201).json({ gameId });
 	} catch (err) {
@@ -207,9 +231,6 @@ export async function getGame(req: Request, res: Response, next: NextFunction) {
 // export async function selectProblem(req: Request, res: Response, next: NextFunction) {}
 // export async function 
 
-// Not an HTTP handler - called by the per-game setTimeout started in
-// createGame (mirrors LobbyService's countdown pattern: server-side timer is
-// the sole authority, never trusted to a client). Sets `ended_at`, persists
-// final scores, tears down the in-memory GameState/timer for this game_id,
-// and emits a final "game:ended" event to the game's socket.io room.
-// async function scheduleGameEnd(gameId: string) {}
+// Ending a game (setting `ended_at`, persisting final scores, tearing down the
+// in-memory GameState and timers, and emitting "game:ended") is `endGame` in
+// src/server.ts, since it's driven by the server-side timers and socket events.

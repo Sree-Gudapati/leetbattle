@@ -536,6 +536,10 @@ describe('team size', () => {
 //  - When GameService is unreachable, every lobby client should receive a "game-start-failed" error
 //  - When the game fails to start, every player's ready state should be reset
 //  - After a failed start, players can ready up again and the lobby should call GameService a second time
+// Lobby should open for a new group once a match starts
+//  - Once the game starts, the match's players should be removed from the lobby
+//  - Once the game starts, someone watching the lobby should stay connected
+//  - Once the game starts, a new group of players should be able to fill the lobby and start another match
 describe('US-6-T-2 game start', () => {
 	// Short enough to keep each test quick, long enough that a test can register
 	// its listeners (or unready a player) before the countdown fires.
@@ -585,6 +589,28 @@ describe('US-6-T-2 game start', () => {
 		const clients = await startCountdown('US-6-T-2-reset');
 		const state = await nextLobbyState(clients[0], (lobby) => lobby.readyCount === 0);
 		expect(state.players.every((player) => !player.ready)).toBe(true);
+	});
+
+	it('removes the match\'s players from the lobby once the game starts', async () => {
+		const observer = await connectUser('US-6-T-2-reset-observer');
+		await startCountdown('US-6-T-2-leave');
+		const state = await nextLobbyState(observer, (lobby) => lobby.playerCount === 0);
+		expect(state.players).toHaveLength(0);
+	});
+
+	it('keeps someone watching the lobby connected once the game starts', async () => {
+		const observer = await connectUser('US-6-T-2-stay-observer');
+		await startCountdown('US-6-T-2-stay');
+		await nextLobbyState(observer, (lobby) => lobby.playerCount === 0);
+		expect(observer.connected).toBe(true);
+	});
+
+	it('lets a new group start another match once the game starts', async () => {
+		const first = await startCountdown('US-6-T-2-first');
+		await nextEvent(first[0], 'lobby:game-started');
+		const second = await startCountdown('US-6-T-2-second');
+		await nextEvent(second[0], 'lobby:game-started');
+		expect(gameServiceFetch).toHaveBeenCalledTimes(2);
 	});
 
 	it('lets players ready up again and calls GameService a second time after a failed start', async () => {

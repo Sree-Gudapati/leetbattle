@@ -10,8 +10,25 @@
 //  - A player who is not connected should display "Reconnecting…"
 //  - Each problem in the match pool should be listed
 //  - The time remaining should be displayed as minutes and seconds
+// Game page should show the match waiting for its players
+//  - While the game is waiting with 2 of 6 players connected, "Waiting for players (2/6)" should be displayed
+// Players should be able to forfeit from the top bar
+//  - During a match, a "Forfeit" button should appear in the top bar
+//  - The Forfeit button should sit to the left of the account menu button
+//  - While the game is waiting for players, the Forfeit button should not be shown
+//  - Clicking Forfeit should open a confirmation dialog
+//  - Clicking Cancel should close the dialog without forfeiting
+//  - Confirming should send the forfeit to the game
+//  - After confirming, the Forfeit button should be disabled
+// Game page should show the result once the game ends
+//  - When team b wins, "Team 2 wins" should be displayed
+//  - When the game was won by forfeit, "by forfeit" should be displayed
+//  - The result screen should have a "Back to lobby" link
+//  - When the game ends in a draw, "Draw" should be displayed
+//  - Once the game has ended, the Forfeit button should not be shown
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { fakeUser } from './helpers';
 
 // Shared mocks. The game page never talks to GameService in these tests: the
@@ -20,6 +37,7 @@ const gameMocks = vi.hoisted(() => ({
 	useGameSocket: vi.fn(),
 	connect: vi.fn(),
 	clearError: vi.fn(),
+	forfeit: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -64,11 +82,13 @@ const problemPool = ['two-sum', 'valid-parentheses', 'best-time-to-buy-and-sell-
 function gameState(overrides: Record<string, unknown> = {}) {
 	return {
 		gameId: 'game-1',
+		phase: 'playing',
 		startedAt: Date.now(),
 		secondsRemaining: 20 * 60,
 		scores: { a: 0, b: 0 },
 		problemPool,
 		players: roster,
+		forfeitVotes: { a: 0, b: 0 },
 		...overrides,
 	};
 }
@@ -80,9 +100,11 @@ function configureGame(context: Record<string, unknown> = {}) {
 		socket: null,
 		connected: false,
 		game: null,
+		result: null,
 		error: null,
 		connect: gameMocks.connect,
 		clearError: gameMocks.clearError,
+		forfeit: gameMocks.forfeit,
 		...context,
 	});
 }
@@ -168,5 +190,128 @@ describe('game page match view', () => {
 		render(<GamePage />);
 
 		expect(screen.getByText('20:00')).toBeTruthy();
+	});
+});
+
+describe('game page while waiting for players', () => {
+	it('US-6-T-2 shows how many players have connected', () => {
+		const twoConnected = roster.map((entry, i) => ({ ...entry, connected: i < 2 }));
+		configureConnectedGame({ phase: 'waiting', players: twoConnected });
+		render(<GamePage />);
+
+		expect(screen.getByText('Waiting for players (2/6)')).toBeTruthy();
+	});
+});
+
+describe('game page forfeit', () => {
+	function forfeitButton() {
+		return screen.getByRole('button', { name: 'Forfeit' });
+	}
+
+	it('US-6-T-2 shows a Forfeit button in the top bar during a match', () => {
+		configureConnectedGame();
+		render(<GamePage />);
+
+		expect(within(screen.getByRole('banner')).getByRole('button', { name: 'Forfeit' })).toBeTruthy();
+	});
+
+	it('US-6-T-2 puts the Forfeit button to the left of the account menu', () => {
+		configureConnectedGame();
+		render(<GamePage />);
+
+		const menu = screen.getByRole('button', { name: 'Account menu' });
+		// DOCUMENT_POSITION_FOLLOWING: the menu comes after the Forfeit button.
+		expect(forfeitButton().compareDocumentPosition(menu) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+	});
+
+	it('US-6-T-2 hides the Forfeit button while waiting for players', () => {
+		configureConnectedGame({ phase: 'waiting' });
+		render(<GamePage />);
+
+		expect(screen.queryByRole('button', { name: 'Forfeit' })).toBeNull();
+	});
+
+	it('US-6-T-2 asks for confirmation when Forfeit is clicked', async () => {
+		const user = userEvent.setup();
+		configureConnectedGame();
+		render(<GamePage />);
+
+		await user.click(forfeitButton());
+
+		expect(screen.getByRole('dialog', { name: 'Forfeit the match?' })).toBeTruthy();
+	});
+
+	it('US-6-T-2 closes the dialog without forfeiting when Cancel is clicked', async () => {
+		const user = userEvent.setup();
+		configureConnectedGame();
+		render(<GamePage />);
+
+		await user.click(forfeitButton());
+		await user.click(screen.getByRole('button', { name: 'Cancel' }));
+
+		expect({ dialog: screen.queryByRole('dialog'), forfeits: gameMocks.forfeit.mock.calls.length }).toEqual({ dialog: null, forfeits: 0 });
+	});
+
+	it('US-6-T-2 sends the forfeit when confirmed', async () => {
+		const user = userEvent.setup();
+		configureConnectedGame();
+		render(<GamePage />);
+
+		await user.click(forfeitButton());
+		await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Forfeit' }));
+
+		expect(gameMocks.forfeit).toHaveBeenCalled();
+	});
+
+	it('US-6-T-2 disables the Forfeit button once the forfeit is sent', async () => {
+		const user = userEvent.setup();
+		configureConnectedGame();
+		render(<GamePage />);
+
+		await user.click(forfeitButton());
+		await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Forfeit' }));
+
+		expect((forfeitButton() as HTMLButtonElement).disabled).toBe(true);
+	});
+});
+
+describe('game page result', () => {
+	function configureEndedGame(result: Record<string, unknown>) {
+		configureGame({ connected: false, game: gameState(), result });
+	}
+
+	it('US-6-T-2 shows the winning team', () => {
+		configureEndedGame({ winner: 'b', reason: 'forfeit' });
+		render(<GamePage />);
+
+		expect(screen.getByRole('heading', { name: 'Team 2 wins' })).toBeTruthy();
+	});
+
+	it('US-6-T-2 says when the game was won by forfeit', () => {
+		configureEndedGame({ winner: 'b', reason: 'forfeit' });
+		render(<GamePage />);
+
+		expect(screen.getByText(/by forfeit/)).toBeTruthy();
+	});
+
+	it('US-6-T-2 links back to the lobby from the result', () => {
+		configureEndedGame({ winner: 'a', reason: 'disconnect' });
+		render(<GamePage />);
+
+		expect(screen.getByRole('link', { name: 'Back to lobby' })).toBeTruthy();
+	});
+
+	it('US-6-T-2 shows a draw', () => {
+		configureEndedGame({ winner: null, reason: 'time' });
+		render(<GamePage />);
+
+		expect(screen.getByRole('heading', { name: 'Draw' })).toBeTruthy();
+	});
+
+	it('US-6-T-2 hides the Forfeit button once the game has ended', () => {
+		configureEndedGame({ winner: 'a', reason: 'time' });
+		render(<GamePage />);
+
+		expect(screen.queryByRole('button', { name: 'Forfeit' })).toBeNull();
 	});
 });
