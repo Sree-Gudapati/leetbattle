@@ -20,6 +20,7 @@
 //  - The saved row should have the sender's team
 //  - The saved row should have the sender's user id
 //  - The saved row should have a sent time that is set
+//  - The saved row should have the message body as text
 //
 // The rest of chat-test-pseudo.md is added one test at a time.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -241,5 +242,10 @@ describe('saving team chat messages', () => {
 		const row = await sendAndReadSavedRow();
 		// pg turns a set TIMESTAMPTZ into a Date (and an unset one into null).
 		expect(row.sent_at).toBeInstanceOf(Date);
+	});
+
+	it('saves the message body as text on the row', async () => {
+		const row = await sendAndReadSavedRow('saved body');
+		expect(row.text).toBe('saved body');
 	});
 });
