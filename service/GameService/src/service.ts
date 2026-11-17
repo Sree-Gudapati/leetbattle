@@ -53,6 +53,11 @@ export interface GameState {
 	problemPool: PoolProblem[]; // problems assigned to this game (task_ids saved in game_problems)
 	selections: Map<string, string>; // userId -> task_id currently being worked (player_selections)
 	forfeitVotes: Record<TeamId, Set<string>>; // userIds on each team who chose to forfeit
+	solved: Record<TeamId, Set<string>>; // task_ids each team has had accepted
+	// The per-team submit lock (see `game:submit` in src/server.ts): whether a
+	// submission is being graded, and when the team may next submit.
+	submitting: Record<TeamId, boolean>;
+	cooldownUntil: Record<TeamId, number>;
 	// Server-side timers driving the match - all owned by src/server.ts.
 	timers: {
 		join?: NodeJS.Timeout; // ends the join wait
@@ -93,6 +98,7 @@ export function serializeGame(game: GameState) {
 		problemPool: game.problemPool,
 		players: [...game.players.values()],
 		forfeitVotes: { a: game.forfeitVotes.a.size, b: game.forfeitVotes.b.size },
+		solved: { a: [...game.solved.a], b: [...game.solved.b] },
 	};
 }
 
@@ -198,6 +204,9 @@ export async function createGame(req: Request, res: Response, next: NextFunction
 			problemPool,
 			selections: new Map(),
 			forfeitVotes: { a: new Set(), b: new Set() },
+			solved: { a: new Set(), b: new Set() },
+			submitting: { a: false, b: false },
+			cooldownUntil: { a: 0, b: 0 },
 			timers: { leave: new Map() },
 		};
 		games.set(gameId, game);
@@ -229,6 +238,25 @@ export async function getGame(req: Request, res: Response, next: NextFunction) {
 	} catch (err) {
 		next(err);
 	}
+}
+
+// CodeService's answer to POST /solution/:questionId.
+export interface Grading {
+	verdict: string;
+	passed: number;
+	total: number;
+}
+
+// Has CodeService grade a solution. Throws if CodeService fails or can't be
+// reached, so the caller can refuse the submission.
+export async function gradeSubmission(questionId: number, code: string): Promise<Grading> {
+	const response = await fetch(`${CODE_SERVICE_URL}/solution/${questionId}`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ code }),
+	});
+	if (!response.ok) throw new Error(`CodeService answered ${response.status}`);
+	return response.json() as Promise<Grading>;
 }
 
 // Invoked when CodeService reports a scored submission for a player in an

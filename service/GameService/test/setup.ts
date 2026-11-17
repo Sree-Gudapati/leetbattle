@@ -23,8 +23,8 @@ export function socketUrl(): string {
 
 beforeAll(async () => {
 	// Short timers so lifecycle tests don't wait the real 5 s join wait / 30 s
-	// reconnect window (socket.test.ts relies on these values).
-	gameServer = createGameServer(app, { joinWaitMs: 300, reconnectGraceMs: 300 });
+	// reconnect window / 5 s submit cooldown (socket.test.ts relies on these values).
+	gameServer = createGameServer(app, { joinWaitMs: 300, reconnectGraceMs: 300, submitCooldownMs: 100 });
 	await new Promise<void>((resolve) => gameServer.httpServer.listen(0, '127.0.0.1', resolve));
 	request = supertest(gameServer.httpServer);
 	return db.reset();

@@ -53,3 +53,6 @@
  //  - Once loaded, the clicked problem's description should be displayed
  //  - When the problem fails to load, an error should be displayed
  //  (CodeService's fetch is mocked; no test calls a real service)
+
+ // Game page should show a win by solving every problem
+ //  - When the game was won by solving every problem, "by solving every problem" should be displayed

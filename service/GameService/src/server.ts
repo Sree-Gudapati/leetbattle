@@ -4,18 +4,22 @@ import type { Express } from 'express';
 import { authenticateToken } from './auth';
 import type { AuthenticatedUser } from './auth';
 import { pool } from './db';
-import { findGame, forgetGame, GAME_DURATION_MS, onGameCreated, serializeGame } from './service';
-import type { GamePlayerState, GameState, TeamId } from './service';
+import { findGame, forgetGame, GAME_DURATION_MS, gradeSubmission, onGameCreated, serializeGame } from './service';
+import type { GamePlayerState, GameState, Grading, TeamId } from './service';
 
 // How long a new game waits for its players before the clock starts anyway.
 const DEFAULT_JOIN_WAIT_MS = 5_000;
 // How long a dropped player has to reconnect before they count as having left.
 const DEFAULT_RECONNECT_GRACE_MS = 30_000;
+// How long a team must wait after a submission is graded before submitting
+// again, so teams can't spam CodeService's grading functions.
+const DEFAULT_SUBMIT_COOLDOWN_MS = 5_000;
 
 interface ServerOptions {
 	origins?: string[];
 	joinWaitMs?: number;
 	reconnectGraceMs?: number;
+	submitCooldownMs?: number;
 }
 
 // What the auth middleware attaches to every accepted socket.
@@ -25,7 +29,16 @@ interface SocketData {
 	player: GamePlayerState;
 }
 
-export type EndReason = 'forfeit' | 'disconnect' | 'time';
+export type EndReason = 'forfeit' | 'disconnect' | 'time' | 'solved';
+
+// What a player sends on `game:submit`.
+interface Submission {
+	questionId?: unknown;
+	code?: unknown;
+}
+
+// The answer to `game:submit`: CodeService's grading, or why it was refused.
+type SubmitResponse = Grading | { error: 'not-playing' | 'unknown-problem' | 'team-busy' | 'cooldown' | 'grading-failed' };
 
 // Sent once on `game:ended`. winner is null for a draw.
 export interface GameResult {
@@ -45,7 +58,8 @@ const otherTeam = (team: TeamId): TeamId => (team === 'a' ? 'b' : 'a');
 //
 // Lifecycle (all server-side timers, never trusted to a client):
 //   waiting -> playing  once every player connects, or the join wait runs out
-//   playing -> ended    when a whole team has left, a team forfeits, or time runs out
+//   playing -> ended    when a whole team has left, a team forfeits, a team
+//                       solves every problem, or time runs out
 export function createGameServer(app: Express, options: ServerOptions = {}) {
 	const origins = options.origins ?? (process.env.FRONTEND_URL ?? 'http://localhost:3000')
 		.split(',')
@@ -53,6 +67,7 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 		.filter(Boolean);
 	const joinWaitMs = options.joinWaitMs ?? DEFAULT_JOIN_WAIT_MS;
 	const reconnectGraceMs = options.reconnectGraceMs ?? DEFAULT_RECONNECT_GRACE_MS;
+	const submitCooldownMs = options.submitCooldownMs ?? DEFAULT_SUBMIT_COOLDOWN_MS;
 	const httpServer = createServer(app);
 	const io = new Server(httpServer, { cors: { origin: origins, methods: ['GET', 'POST'] } });
 	// The live socket id for each player, so a stale connection (e.g. the tab
@@ -172,6 +187,41 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 			const stillIn = teamOf(game, player.team).filter((teammate) => teammate.connected && !teammate.left);
 			if (stillIn.every((teammate) => votes.has(teammate.userId))) {
 				void endGame(game, { winner: otherTeam(player.team), reason: 'forfeit' });
+				return;
+			}
+			broadcastState(game);
+		});
+
+		// Grades a teammate's solution through CodeService. One submission per
+		// team at a time, then a cooldown, so a team can't spam the grader. An
+		// accepted solution marks the problem solved for the team, and the first
+		// team to solve the whole pool wins. Results that land after the game has
+		// ended change nothing, since endGame only runs once.
+		socket.on('game:submit', async (submission: Submission, ack: (_response: SubmitResponse) => void) => {
+			if (typeof ack !== 'function') return;
+			if (game.phase !== 'playing') return ack({ error: 'not-playing' });
+			const problem = game.problemPool.find((entry) => entry.questionId === submission?.questionId);
+			if (!problem) return ack({ error: 'unknown-problem' });
+			const { team } = player;
+			if (game.submitting[team]) return ack({ error: 'team-busy' });
+			if (Date.now() < game.cooldownUntil[team]) return ack({ error: 'cooldown' });
+
+			game.submitting[team] = true;
+			let grading: Grading | null;
+			try {
+				grading = await gradeSubmission(problem.questionId, String(submission.code ?? ''));
+			} catch {
+				grading = null;
+			} finally {
+				game.submitting[team] = false;
+				game.cooldownUntil[team] = Date.now() + submitCooldownMs;
+			}
+			if (!grading) return ack({ error: 'grading-failed' });
+
+			if (grading.verdict === 'Accepted') game.solved[team].add(problem.taskId);
+			ack(grading);
+			if (game.solved[team].size === game.problemPool.length) {
+				void endGame(game, { winner: team, reason: 'solved' });
 				return;
 			}
 			broadcastState(game);

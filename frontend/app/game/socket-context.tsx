@@ -40,7 +40,7 @@ export interface GameState {
 // What GameService sends once on `game:ended`. winner is null for a draw.
 export interface GameResult {
 	winner: TeamId | null;
-	reason: 'forfeit' | 'disconnect' | 'time';
+	reason: 'forfeit' | 'disconnect' | 'time' | 'solved';
 }
 
 export interface GameError {

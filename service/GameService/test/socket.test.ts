@@ -35,13 +35,28 @@
 //  - Each problem in the match pool should carry its task_id
 //  - Each problem in the match pool should carry the question_id CodeService looks problems up by
 //  - Each problem in the match pool should carry its difficulty
+// Players should be able to submit a solution through the game
+//  - A correct solution should come back from CodeService as "Accepted"
+//  - The code should be graded by CodeService using the problem's question_id
+//  - Once a solution is accepted, the game state should show that problem as solved for the submitter's team
+//  - A wrong solution should not mark the problem as solved
+//  - A problem that isn't in the match pool should be rejected with "unknown-problem"
+//  - Submitting before the game has started should be rejected with "not-playing"
+//  - When CodeService fails, the submission should be rejected with "grading-failed"
+// Teams should not be able to spam submissions
+//  - While a teammate's submission is being graded, another submission from the same team should be rejected with "team-busy"
+//  - While one team's submission is being graded, the other team should still be able to submit
+//  - Right after a team's submission is graded, its next submission should be rejected with "cooldown"
+//  - Once the cooldown has passed, the team should be able to submit again
+// Game should end once a team solves every problem
+//  - When a team has solved every problem in the pool, that team should win with reason "solved"
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EncryptJWT } from 'jose';
 import { io } from 'socket.io-client';
 import type { Socket } from 'socket.io-client';
 import { gameServer, request, socketUrl } from './setup';
-import { fakeCodeServiceFetch, sixReadyPlayers } from './fixtures';
+import { FAKE_GRADING_MS, fakeCodeServiceFetch, sixReadyPlayers } from './fixtures';
 import type { ReadyPlayer } from './fixtures';
 
 // Mirrors the JWE session tokens AuthService issues (see LobbyService's auth
@@ -55,6 +70,7 @@ interface GameStatePayload {
 	phase: 'waiting' | 'playing';
 	secondsRemaining: number;
 	problemPool: { taskId: string; questionId: number; difficulty: string }[];
+	solved: Record<'a' | 'b', string[]>; // task_ids each team has solved
 	players: { userId: string; team: 'a' | 'b'; connected: boolean; left: boolean }[];
 	forfeitVotes: Record<'a' | 'b', number>;
 }
@@ -62,7 +78,7 @@ interface GameStatePayload {
 // The payload GameService sends on `game:ended`.
 interface GameResult {
 	winner: 'a' | 'b' | null;
-	reason: 'forfeit' | 'disconnect' | 'time';
+	reason: 'forfeit' | 'disconnect' | 'time' | 'solved';
 }
 
 let clients: Socket[] = [];
@@ -160,9 +176,13 @@ async function waitForServerSockets(count: number): Promise<void> {
 	}
 }
 
+// The stand-in for CodeService, kept so tests can check what was sent to it.
+let codeService: ReturnType<typeof fakeCodeServiceFetch>;
+
 beforeAll(() => {
 	process.env.SECRET = SECRET;
-	vi.stubGlobal('fetch', fakeCodeServiceFetch());
+	codeService = fakeCodeServiceFetch();
+	vi.stubGlobal('fetch', codeService);
 });
 
 // A fresh six-player game per test, since the lifecycle tests end theirs.
@@ -414,5 +434,131 @@ describe('problem details in the game state', () => {
 		expect(state.problemPool.map((problem) => problem.difficulty)).toEqual([
 			'Easy', 'Easy', 'Easy', 'Easy', 'Easy', 'Easy', 'Medium', 'Medium', 'Medium',
 		]);
+	});
+});
+
+// What GameService answers a `game:submit` with: CodeService's grading, or
+// the reason the submission was refused before it reached CodeService.
+interface SubmitResponse {
+	verdict?: string;
+	error?: string;
+}
+
+// Sends a solution for `questionId` and resolves with GameService's answer.
+// The fake CodeService (test/fixtures.ts) accepts the code "correct", fails
+// on "crash", and calls anything else a wrong answer.
+function submit(socket: Socket, questionId: number, code: string): Promise<SubmitResponse> {
+	return socket.timeout(2_000).emitWithAck('game:submit', { questionId, code });
+}
+
+// A game that is already playing, with every player connected, plus its pool.
+async function playingGame(teamA: number, teamB: number) {
+	const game = await newGame(teamA, teamB);
+	const first = await joinGame(game.players[0].userId, game.gameId);
+	const others: Socket[] = [];
+	for (const player of game.players.slice(1)) others.push((await joinGame(player.userId, game.gameId)).socket);
+	return { sockets: [first.socket, ...others], pool: first.state.problemPool };
+}
+
+// Long enough for the test server's 100 ms submit cooldown (test/setup.ts) to pass.
+const AFTER_COOLDOWN_MS = 150;
+
+describe('submitting a solution', () => {
+	it('returns CodeService\'s "Accepted" for a correct solution', async () => {
+		const { sockets, pool } = await playingGame(1, 1);
+		const response = await submit(sockets[0], pool[0].questionId, 'correct');
+		expect(response.verdict).toBe('Accepted');
+	});
+
+	it('has CodeService grade the code by the problem\'s question_id', async () => {
+		const { sockets, pool } = await playingGame(1, 1);
+		await submit(sockets[0], pool[0].questionId, 'correct');
+		expect(codeService).toHaveBeenCalledWith(`http://localhost:4001/solution/${pool[0].questionId}`, expect.anything());
+	});
+
+	it('shows an accepted problem as solved for the submitter\'s team', async () => {
+		const { sockets, pool } = await playingGame(1, 1);
+		const solved = nextState(sockets[1], (state) => state.solved.a.length > 0);
+		await submit(sockets[0], pool[0].questionId, 'correct');
+		expect((await solved).solved.a).toEqual([pool[0].taskId]);
+	});
+
+	it('does not mark a problem solved for a wrong solution', async () => {
+		const { sockets, pool } = await playingGame(1, 1);
+		// GameService sends a fresh state once each submission is graded.
+		const graded = nextState(sockets[1]);
+		await submit(sockets[0], pool[0].questionId, 'wrong');
+		expect((await graded).solved.a).toEqual([]);
+	});
+
+	it('rejects a problem that isn\'t in the match pool with "unknown-problem"', async () => {
+		const { sockets } = await playingGame(1, 1);
+		const response = await submit(sockets[0], -1, 'correct');
+		expect(response.error).toBe('unknown-problem');
+	});
+
+	it('rejects a submission before the game has started with "not-playing"', async () => {
+		// Only one of the two players connects, so the game is still waiting.
+		const game = await newGame(1, 1);
+		const { socket, state } = await joinGame(game.players[0].userId, game.gameId);
+		const response = await submit(socket, state.problemPool[0].questionId, 'correct');
+		expect(response.error).toBe('not-playing');
+	});
+
+	it('rejects the submission with "grading-failed" when CodeService fails', async () => {
+		const { sockets, pool } = await playingGame(1, 1);
+		const response = await submit(sockets[0], pool[0].questionId, 'crash');
+		expect(response.error).toBe('grading-failed');
+	});
+});
+
+describe('submission lock and cooldown', () => {
+	it('rejects a teammate\'s submission with "team-busy" while one is being graded', async () => {
+		const { sockets, pool } = await playingGame(2, 2);
+		const first = submit(sockets[0], pool[0].questionId, 'wrong');
+		// Well inside the fake CodeService's grading time.
+		await pause(FAKE_GRADING_MS / 5);
+		const second = await submit(sockets[1], pool[1].questionId, 'wrong');
+		await first;
+		expect(second.error).toBe('team-busy');
+	});
+
+	it('still lets the other team submit while one team\'s submission is being graded', async () => {
+		const { sockets, pool } = await playingGame(2, 2);
+		const teamA = submit(sockets[0], pool[0].questionId, 'wrong');
+		await pause(FAKE_GRADING_MS / 5);
+		// sockets[2] is the first player on team b.
+		const teamB = await submit(sockets[2], pool[0].questionId, 'wrong');
+		await teamA;
+		expect(teamB.verdict).toBe('Wrong Answer');
+	});
+
+	it('rejects a team\'s next submission with "cooldown" right after one is graded', async () => {
+		const { sockets, pool } = await playingGame(1, 1);
+		await submit(sockets[0], pool[0].questionId, 'wrong');
+		const response = await submit(sockets[0], pool[0].questionId, 'wrong');
+		expect(response.error).toBe('cooldown');
+	});
+
+	it('lets the team submit again once the cooldown has passed', async () => {
+		const { sockets, pool } = await playingGame(1, 1);
+		await submit(sockets[0], pool[0].questionId, 'wrong');
+		await pause(AFTER_COOLDOWN_MS);
+		const response = await submit(sockets[0], pool[0].questionId, 'wrong');
+		expect(response.verdict).toBe('Wrong Answer');
+	});
+});
+
+describe('winning by solving every problem', () => {
+	it('gives the win to the team that solves every problem, with reason "solved"', async () => {
+		const { sockets, pool } = await playingGame(1, 1);
+		// Team a solves all but the last problem, waiting out the cooldown each time.
+		for (const problem of pool.slice(0, -1)) {
+			await submit(sockets[0], problem.questionId, 'correct');
+			await pause(AFTER_COOLDOWN_MS);
+		}
+		const ended = nextEvent<GameResult>(sockets[1], 'game:ended');
+		await submit(sockets[0], pool[pool.length - 1].questionId, 'correct');
+		expect(await ended).toEqual({ winner: 'a', reason: 'solved' });
 	});
 });

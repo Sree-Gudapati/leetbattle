@@ -26,6 +26,7 @@ const END_REASONS: Record<GameResult['reason'], string> = {
 	forfeit: 'by forfeit',
 	disconnect: 'by disconnect: the other team left the match',
 	time: 'when time ran out',
+	solved: 'by solving every problem',
 };
 
 const BUTTON = 'lb-press inline-flex min-h-9 items-center justify-center rounded-lg px-4 text-sm font-semibold disabled:cursor-not-allowed';

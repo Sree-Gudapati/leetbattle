@@ -43,3 +43,21 @@
  //  - Each problem in the match pool should carry its task_id
  //  - Each problem in the match pool should carry the question_id CodeService looks problems up by
  //  - Each problem in the match pool should carry its difficulty
+
+ // Players should be able to submit a solution through the game
+ //  - A correct solution should come back from CodeService as "Accepted"
+ //  - The code should be graded by CodeService using the problem's question_id
+ //  - Once a solution is accepted, the game state should show that problem as solved for the submitter's team
+ //  - A wrong solution should not mark the problem as solved
+ //  - A problem that isn't in the match pool should be rejected with "unknown-problem"
+ //  - Submitting before the game has started should be rejected with "not-playing"
+ //  - When CodeService fails, the submission should be rejected with "grading-failed"
+
+ // Teams should not be able to spam submissions
+ //  - While a teammate's submission is being graded, another submission from the same team should be rejected with "team-busy"
+ //  - While one team's submission is being graded, the other team should still be able to submit
+ //  - Right after a team's submission is graded, its next submission should be rejected with "cooldown"
+ //  - Once the cooldown has passed, the team should be able to submit again
+
+ // Game should end once a team solves every problem
+ //  - When a team has solved every problem in the pool, that team should win with reason "solved"
