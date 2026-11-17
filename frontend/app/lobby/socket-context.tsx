@@ -121,3 +121,7 @@ export function useLobbySocket(): LobbySocketContextValue {
 	if (!context) throw new Error('useLobbySocket must be used within LobbySocketProvider');
 	return context;
 }
+
+export function useOptionalLobbySocket(): LobbySocketContextValue | null {
+	return useContext(LobbySocketContext);
+}
