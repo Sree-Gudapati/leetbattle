@@ -31,3 +31,7 @@
 //  - When the sender's own "chat:message" comes back, it should appear once, not twice
 //  - When "chat:send" is answered with "Message too long", the chat bar should show "Message too long"
 
+
+// The match page should show team chat while the game is being played
+//  - While playing, the match page should display a "Team chat" panel
+//  - Sending a comment on the match page should emit "chat:send" on the game socket

@@ -9,7 +9,7 @@ estimate_hours: 4
 # Send and recieve team chat messages over the GameService Websockets
 
 ## Description
-Serves US-3 Communication. The team chat panel currently keeps messages only in the messaging persons browser. This task sends each message over the match websocket so every teammate sees it and it saves to the GameService DB. Out of scope: loading history on join or reconnect, cross team chat, the chat panel's look (US-3-T-1), message moderation / profanity filtering. 
+Serves US-3 Communication. The team chat panel currently keeps messages only in the messaging persons browser and it only works in the practice page not on GameService over a websocket. This task sends each message over the match websocket so every teammate sees it and it saves to the GameService DB. Out of scope: loading history on join or reconnect, cross team chat, the chat panel's look (US-3-T-1), message moderation / profanity filtering. 
 
 ## Specs
 ### Sending
@@ -25,6 +25,8 @@ Serves US-3 Communication. The team chat panel currently keeps messages only in 
 - The already existing `useTeamChat()` in `frontend/app/editor/chat-context.tsx` stays the same shape. 
 - When a game socket is available, messages is filled from incoming `chat:message` events instead of the local state. Otherwise it keeps the local state. (This makes sure the tests from when chat was static and not set up over the websocket still pass)
 - When `chat:send` is answered with "Message too long", the chat bar shows that message
+- The match page shows the team chat panel while playing, connected to the game socket. 
+
 
 ## Requirements
 - Use the existing GameService socket auth and team rooms implementation. 
