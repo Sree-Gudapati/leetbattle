@@ -17,6 +17,7 @@
 // GameService should save each accepted team message
 //  - A valid "chat:send" should add one row to "team_messages"
 //  - The saved row should have the game's id
+//  - The saved row should have the sender's team
 //
 // The rest of chat-test-pseudo.md is added one test at a time.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -222,5 +223,10 @@ describe('saving team chat messages', () => {
 	it('saves the game\'s id on the row', async () => {
 		const row = await sendAndReadSavedRow();
 		expect(row.game_id).toBe(gameId);
+	});
+
+	it('saves the sender\'s team on the row', async () => {
+		const row = await sendAndReadSavedRow();
+		expect(row.team).toBe('a');
 	});
 });
