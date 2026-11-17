@@ -117,3 +117,12 @@
 
  // (decide) Bans should be saved
  //  - Once play starts, the game's saved problems (game_problems) should only be the ones left in play
+
+// US-2-T-2 (#48): Players' code should reach only their own team
+ //  - When a player sends their code, a teammate should receive it with the player's userId
+ //  - The teammate should receive the question id and the workspace that was sent
+ //  - A player on the other team should never receive it
+ //  - The player who sent it should not receive it back
+ //  - Code sent before play has started should not be relayed
+ //  - Code for a question that isn't in the match pool should not be relayed
+ //  - A malformed workspace should not be relayed

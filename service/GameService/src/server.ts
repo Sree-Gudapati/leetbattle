@@ -41,6 +41,35 @@ interface Submission {
 }
 
 // What a player sends on `game:ban`.
+// One tab of a player's editor, as the practice editor keeps it.
+interface EditorTab {
+	id: string;
+	name: string;
+	code: string;
+}
+
+// A player's editor for one question: their tabs and which one is open.
+interface Workspace {
+	tabs: EditorTab[];
+	activeTabId: string;
+}
+
+// What a player sends on `game:code`.
+interface CodeUpdate {
+	questionId?: unknown;
+	workspace?: unknown;
+}
+
+const isEditorTab = (value: unknown): value is EditorTab => {
+	const tab = value as Partial<EditorTab> | null;
+	return typeof tab?.id === 'string' && typeof tab.name === 'string' && typeof tab.code === 'string';
+};
+
+const isWorkspace = (value: unknown): value is Workspace => {
+	const workspace = value as Partial<Workspace> | null;
+	return Array.isArray(workspace?.tabs) && workspace.tabs.every(isEditorTab) && typeof workspace.activeTabId === 'string';
+};
+
 interface Ban {
 	questionId?: unknown;
 }
@@ -250,6 +279,20 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 				return;
 			}
 			broadcastState(game);
+		});
+
+		// Passes a player's editor for one question on to their own team only,
+		// so the other team can never receive it. Nothing is saved here.
+		socket.on('game:code', (update: CodeUpdate) => {
+			if (game.phase !== 'playing') return;
+			if (!game.problemPool.some((problem) => problem.questionId === update?.questionId)) return;
+			if (!isWorkspace(update.workspace)) return;
+			socket.to(`${gameRoom(game)}:${player.team}`).emit('game:code', {
+				userId: user.id,
+				displayName: player.displayName,
+				questionId: update.questionId,
+				workspace: update.workspace,
+			});
 		});
 
 		// A team forfeits once every teammate still in the game has voted to.
