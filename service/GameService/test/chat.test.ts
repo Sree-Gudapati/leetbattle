@@ -16,6 +16,7 @@
 //
 // GameService should save each accepted team message
 //  - A valid "chat:send" should add one row to "team_messages"
+//  - The saved row should have the game's id
 //
 // The rest of chat-test-pseudo.md is added one test at a time.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -90,6 +91,26 @@ async function waitForServerSockets(count: number): Promise<void> {
 		if (Date.now() > deadline) throw new Error('Timed out waiting for sockets to close');
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
+}
+
+// A row of team_messages, as pg returns it.
+interface TeamMessageRow {
+	id: string;
+	game_id: string;
+	team: 'a' | 'b';
+	user_id: string;
+	text: string;
+	sent_at: Date;
+}
+
+// Player 0 (team a) sends `text`; once a teammate has the message, resolves
+// with the row it saved in team_messages.
+async function sendAndReadSavedRow(text = 'hello team'): Promise<TeamMessageRow> {
+	const teammate = nextEvent<ChatMessage>(sockets[1], 'chat:message');
+	sockets[0].emit('chat:send', { text });
+	const { id } = await teammate;
+	const { rows } = await pool.query<TeamMessageRow>('SELECT * FROM team_messages WHERE id = $1', [id]);
+	return rows[0];
 }
 
 beforeAll(() => {
@@ -196,5 +217,10 @@ describe('saving team chat messages', () => {
 		await teammate;
 		const { rows } = await pool.query('SELECT COUNT(*)::int AS count FROM team_messages WHERE game_id = $1', [gameId]);
 		expect(rows[0].count).toBe(1);
+	});
+
+	it('saves the game\'s id on the row', async () => {
+		const row = await sendAndReadSavedRow();
+		expect(row.game_id).toBe(gameId);
 	});
 });
