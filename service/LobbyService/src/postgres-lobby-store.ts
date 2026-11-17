@@ -52,6 +52,10 @@ export class PostgresLobbyStore implements LobbyStore {
 		await this.pool.query('UPDATE lobby_members SET display_name = $2 WHERE user_id = $1', [userId, displayName]);
 	}
 
+	async clearTeam(userId: string): Promise<void> {
+		await this.pool.query('UPDATE lobby_members SET team = NULL WHERE user_id = $1', [userId]);
+	}
+
 	async setTeam(userId: string, team: TeamId): Promise<void> {
 		const client = await this.pool.connect();
 		try {

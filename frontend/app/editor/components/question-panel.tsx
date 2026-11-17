@@ -2,13 +2,15 @@
 import { useEditor } from '../context';
 import QuestionNavigation from './question-navigation';
 
-const DIFFICULTY_STYLES: Record<string, string> = {
+// Shared with the game page's problem list.
+export const DIFFICULTY_STYLES: Record<string, string> = {
 	Easy: 'text-green-600 dark:text-green-400',
 	Medium: 'text-yellow-600 dark:text-yellow-400',
 	Hard: 'text-red-600 dark:text-red-400',
 };
 
-function titleFromTaskId(taskId: string): string {
+// "two-sum" -> "Two Sum". Shared with the game page's problem list.
+export function titleFromTaskId(taskId: string): string {
 	return taskId
 		.split('-')
 		.map((word) => word.charAt(0).toUpperCase() + word.slice(1))

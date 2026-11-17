@@ -16,7 +16,7 @@
 
  // Lobby should show errors and match readiness
  //  - When the socket context has an error, its message should appear in an alert
- //  - When matchReadiness is set, the "ready for the match" banner should be displayed
+ //  - When matchReadiness is set, the lobby should navigate to the game page (see game-test-pseudo.md)
 
  // Lobby should handle players who have not joined
  //  - When the current user is not in the lobby, a "Join lobby" button should be shown
@@ -34,6 +34,13 @@
  //  - When the user is on Team 1, Team 1's button should display "Your team"
  //  - When the user is on Team 2 and Team 1 has space, the button should display "Switch to Team 1"
  //  - When the user has no team and Team 1 has 3 players, the button should display "Team full"
+
+ // The host should be able to choose the number of players per team
+ //  - The host should see a "Players per team" control with 1v1, 2v2 and 3v3 options
+ //  - Clicking "2v2" should send a set-team-size event with 2
+ //  - A player who is not the host should not see the team size options
+ //  - With a team size of 2 and 2 players ready, the status should display "2/4 players ready"
+ //  - With a team size of 1 and 2 players in the lobby, "This lobby is full." should be displayed to a player who has not joined
 
  // Players should be able to change their display name
  //  - Typing a new name and clicking "Save name" should send a set-name event with the trimmed name

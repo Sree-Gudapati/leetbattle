@@ -37,3 +37,6 @@ I think it's also smart because it gives a sense of progression and strategy in 
 ### Points per problem are not static
 
 I think it would be cool to make unsolved problems increase in point value over time. This may change strategy mid-game and may make players more interested in trying to solve the easier problems for the entire game. I would think this would work better if there were more than 3 questions per game, though.
+
+### Collaborative Test Cases
+Would be nice honestly, but not a necessary feature right now
