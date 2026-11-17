@@ -11,6 +11,7 @@
 //
 // GameService should limit message text
 //  - A "chat:send" with no more than 500 characters should be delivered
+//  - A "chat:send" with text longer than 500 characters should not send "chat:message"
 //
 // The rest of chat-test-pseudo.md is added one test at a time.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -160,5 +161,18 @@ describe('team chat message length', () => {
 		const teammate = nextEvent<ChatMessage>(sockets[1], 'chat:message');
 		sockets[0].emit('chat:send', { text: longest });
 		expect((await teammate).text).toBe(longest);
+	});
+
+	it('does not send a chat:message for a chat:send longer than 500 characters', async () => {
+		// Record every message the teammate receives.
+		const received: string[] = [];
+		sockets[1].on('chat:message', (message: ChatMessage) => received.push(message.text));
+		sockets[0].emit('chat:send', { text: 'a'.repeat(501) });
+		// The server handles one socket's events in order, so once this valid
+		// follow-up arrives, the too-long one has already been handled.
+		const followUp = nextEvent<ChatMessage>(sockets[1], 'chat:message');
+		sockets[0].emit('chat:send', { text: 'follow-up' });
+		await followUp;
+		expect(received).toEqual(['follow-up']);
 	});
 });
