@@ -19,6 +19,7 @@
 //  - The saved row should have the game's id
 //  - The saved row should have the sender's team
 //  - The saved row should have the sender's user id
+//  - The saved row should have a sent time that is set
 //
 // The rest of chat-test-pseudo.md is added one test at a time.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -234,5 +235,11 @@ describe('saving team chat messages', () => {
 	it('saves the sender\'s user id on the row', async () => {
 		const row = await sendAndReadSavedRow();
 		expect(row.user_id).toBe(players[0].userId);
+	});
+
+	it('saves a sent time on the row', async () => {
+		const row = await sendAndReadSavedRow();
+		// pg turns a set TIMESTAMPTZ into a Date (and an unset one into null).
+		expect(row.sent_at).toBeInstanceOf(Date);
 	});
 });
