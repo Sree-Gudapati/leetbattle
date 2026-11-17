@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import type { Express } from 'express';
@@ -298,20 +297,33 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 			});
 		});
 
-		// Team chat (US-3-T-2): passes a player's message on to their own team,
-		// sender included. The team room comes from the server's roster, never the client.
-		socket.on('chat:send', (message: { text?: unknown }, ack?: (_response: { error: string }) => void) => {
+		// Team chat (US-3-T-2): saves a player's message to team_messages, then
+		// passes it on to their own team, sender included. The game, team and
+		// user come from the server's roster and the authenticated socket, never
+		// the client. The saved row's id and time are the ones sent out.
+		socket.on('chat:send', async (message: { text?: unknown }, ack?: (_response: { error: string }) => void) => {
 			const reply = typeof ack === 'function' ? ack : () => undefined;
 			const text = message?.text;
 			if (typeof text !== 'string') return;
 			if (text.length > MAX_CHAT_LENGTH) return reply({ error: 'Message too long' });
+			let saved: { id: string; sent_at: Date };
+			try {
+				const { rows } = await pool.query(
+					'INSERT INTO team_messages (game_id, team, user_id, text) VALUES ($1, $2, $3, $4) RETURNING id, sent_at',
+					[game.gameId, player.team, user.id, text],
+				);
+				saved = rows[0];
+			} catch (err) {
+				console.error('[game-service] failed to save a chat message', err);
+				return;
+			}
 			io.to(`${gameRoom(game)}:${player.team}`).emit('chat:message', {
-				id: randomUUID(),
+				id: saved.id,
 				userId: user.id,
 				displayName: player.displayName,
 				team: player.team,
 				text,
-				sentAt: new Date().toISOString(),
+				sentAt: saved.sent_at.toISOString(),
 			});
 		});
 
