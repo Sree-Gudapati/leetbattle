@@ -1,3 +1,4 @@
+"use client";
 // The practice editor's layout: the question on the left, the code (tabs,
 // Monaco, Run / Submit, results, test cases) on the right. Shared by the
 // practice page (/editor) and the game page once the bans are in. Must be
