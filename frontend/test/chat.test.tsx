@@ -321,4 +321,13 @@ describe('rejected messages', () => {
 
 		expect(screen.getByRole('alert').textContent).toBe('Whoa, slow down!');
 	});
+
+	it('US-3-T-4 keeps the typed text in the message box when a message is rejected', async () => {
+		const fake = renderChatWithSocket();
+		const answer = await sendAndGetAnswer(fake, 'Question 1 is done');
+
+		act(() => answer({ error: 'Whoa, slow down!' }));
+
+		expect(messageBox().value).toBe('Question 1 is done');
+	});
 });
