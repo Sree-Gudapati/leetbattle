@@ -3,7 +3,7 @@ import { FormEvent, useState } from 'react';
 import { useTeamChat } from '../chat-context';
 
 export default function TeamChat() {
-	const { messages, send } = useTeamChat();
+	const { messages, send, error } = useTeamChat();
 	const [draft, setDraft] = useState('');
 	const canSend = draft.trim() !== '';
 
@@ -34,6 +34,8 @@ export default function TeamChat() {
 					))}
 				</ul>
 			)}
+
+			{error && <p role="alert" className="border-t border-line px-4 pt-2 text-xs text-danger">{error}</p>}
 
 			<form onSubmit={onSubmit} className="flex gap-2 border-t border-line px-4 py-2">
 				<input

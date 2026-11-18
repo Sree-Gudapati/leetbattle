@@ -1,11 +1,13 @@
-// Tests for the team chat panel on the match screen (US-3-T-1).
+// Tests for the team chat panel on the match screen (US-3-T-1) and for sending
+// and receiving its messages over the game socket (US-3-T-2).
 // Pseudocode these tests were written from: test/chat-test-pseudo.md
 //
 // Nothing here talks to a backend: the comments are mocked data handed to the
-// chat provider, the signed-in player is a fake, and the one test that renders
-// the whole match screen serves its problems from a stubbed fetch.
+// chat provider, the signed-in player is a fake, the one test that renders
+// the whole match screen serves its problems from a stubbed fetch, and the
+// US-3-T-2 tests hand the provider a fake game socket.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { fakeUser, jsonResponse, stubFetch, threeProblems } from './helpers';
 
@@ -28,6 +30,7 @@ import EditorPage from '../app/editor/page';
 import TeamChat from '../app/editor/components/team-chat';
 import { ChatProvider } from '../app/editor/chat-context';
 import type { ChatMessage } from '../app/editor/chat-context';
+import type { Socket } from 'socket.io-client';
 
 // Mocked team comments from two teammates.
 const teamComments: ChatMessage[] = [
@@ -52,6 +55,41 @@ function messageBox(): HTMLInputElement {
 // The button that posts the comment.
 function sendButton(): HTMLButtonElement {
 	return screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement;
+}
+
+type Handler = (_payload: unknown) => void;
+
+// A stand-in for the game's socket.io-client Socket (same idea as
+// game-socket.test.tsx): `on` records handlers, `fire` invokes them the way
+// the real socket would on a server event, and `emit` records what was sent.
+function fakeSocket() {
+	const handlers = new Map<string, Handler[]>();
+	const socket = {
+		on: vi.fn((event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+			return socket;
+		}),
+		off: vi.fn((event: string, handler: Handler) => {
+			handlers.set(event, (handlers.get(event) ?? []).filter((entry) => entry !== handler));
+			return socket;
+		}),
+		emit: vi.fn(),
+	};
+	const fire = (event: string, payload?: unknown) => {
+		for (const handler of handlers.get(event) ?? []) handler(payload);
+	};
+	return { socket, fire };
+}
+
+// Renders the chat panel connected to a fake game socket, with no comments yet.
+function renderChatWithSocket() {
+	const fake = fakeSocket();
+	render(
+		<ChatProvider socket={fake.socket as unknown as Socket}>
+			<TeamChat />
+		</ChatProvider>,
+	);
+	return fake;
 }
 
 beforeEach(() => {
@@ -170,5 +208,95 @@ describe('posting a team comment', () => {
 
 		// Spaces alone are not a comment.
 		expect(sendButton().disabled).toBe(true);
+	});
+});
+
+// US-3-T-2: team chat messages over the game socket (all tests use a mocked socket, no backend)
+
+describe('sending comments over the game socket', () => {
+	it('US-3-T-2 emits chat:send with the message text when the player sends a comment', async () => {
+		const user = userEvent.setup();
+		const fake = renderChatWithSocket();
+
+		await user.type(messageBox(), 'Question 1 is done');
+		await user.click(sendButton());
+
+		// The event name and its { text } payload (anything after that is not checked here).
+		expect(fake.socket.emit.mock.calls[0].slice(0, 2)).toEqual(['chat:send', { text: 'Question 1 is done' }]);
+	});
+
+	it('US-3-T-2 does not show a sent comment until the server delivers it', async () => {
+		const user = userEvent.setup();
+		renderChatWithSocket();
+
+		await user.type(messageBox(), 'Question 1 is done');
+		await user.click(sendButton());
+
+		// The server has not sent chat:message back yet, so the panel is still empty.
+		expect(screen.getByText('No messages yet')).toBeTruthy();
+	});
+
+	it('US-3-T-2 still shows a sent comment straight away when there is no game socket', async () => {
+		const user = userEvent.setup();
+		// No socket, as on the practice editor: chat stays on the page (the US-3-T-1 behaviour).
+		renderChat([]);
+
+		await user.type(messageBox(), 'Question 1 is done');
+		await user.click(sendButton());
+
+		expect(screen.getByText('Question 1 is done')).toBeTruthy();
+	});
+});
+
+// A chat:message from Grace (u2), a teammate of the signed-in player, as GameService sends it.
+const fromGrace = {
+	id: 'm9',
+	userId: 'u2',
+	displayName: 'Grace',
+	team: 'a',
+	text: 'Try a hash map',
+	sentAt: '2026-11-17T12:00:00.000Z',
+};
+
+describe('showing comments the server delivers', () => {
+	it('US-3-T-2 shows an incoming chat:message in the panel once', () => {
+		const fake = renderChatWithSocket();
+
+		act(() => fake.fire('chat:message', fromGrace));
+
+		expect(screen.queryAllByText('Try a hash map')).toHaveLength(1);
+	});
+
+	it('US-3-T-2 shows the name of the player who sent an incoming chat:message', () => {
+		const fake = renderChatWithSocket();
+
+		act(() => fake.fire('chat:message', fromGrace));
+
+		expect(screen.getByRole('listitem').textContent).toContain('Grace');
+	});
+
+	it('US-3-T-2 shows the player\'s own comment once when the server sends it back', async () => {
+		const user = userEvent.setup();
+		const fake = renderChatWithSocket();
+
+		await user.type(messageBox(), 'Question 1 is done');
+		await user.click(sendButton());
+		// GameService sends the sender their own message too.
+		act(() => fake.fire('chat:message', { ...fromGrace, id: 'm10', userId: 'u1', displayName: 'Ada', text: 'Question 1 is done' }));
+
+		expect(screen.queryAllByText('Question 1 is done')).toHaveLength(1);
+	});
+
+	it('US-3-T-2 shows "Message too long" in the chat bar when chat:send is answered with it', async () => {
+		const user = userEvent.setup();
+		const fake = renderChatWithSocket();
+
+		await user.type(messageBox(), 'Question 1 is done');
+		await user.click(sendButton());
+		// GameService answers chat:send on its acknowledgement (the callback passed after the payload).
+		const answer = fake.socket.emit.mock.calls[0][2] as (_response: { error: string }) => void;
+		act(() => answer({ error: 'Message too long' }));
+
+		expect(screen.getByRole('alert').textContent).toBe('Message too long');
 	});
 });

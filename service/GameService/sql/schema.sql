@@ -63,3 +63,16 @@ CREATE TABLE IF NOT EXISTS submissions (
 
 CREATE INDEX IF NOT EXISTS submissions_game_user_idx ON submissions (game_id, user_id);
 CREATE INDEX IF NOT EXISTS submissions_game_task_idx ON submissions (game_id, task_id);
+
+-- Team chat (US-3-T-2): every accepted message, one row each. The id is the
+-- one sent out on `chat:message`. team and user_id come from the sender's
+-- authenticated socket, never from the client.
+CREATE TABLE IF NOT EXISTS team_messages (
+  id      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  game_id uuid NOT NULL,
+  team    CHAR(1) NOT NULL CHECK (team IN ('a', 'b')),
+  user_id uuid NOT NULL,
+  text    VARCHAR(500) NOT NULL,
+  sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  FOREIGN KEY (game_id, user_id) REFERENCES player_teams (game_id, user_id)
+);

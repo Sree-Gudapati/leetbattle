@@ -10,6 +10,8 @@ import PageLoader from '../../_shared/page-loader';
 import type { TeamId } from '../../lobby/socket-context';
 import { EditorProvider } from '../../editor/context';
 import EditorLayout from '../../editor/components/editor-layout';
+import TeamChat from '../../editor/components/team-chat';
+import { ChatProvider } from '../../editor/chat-context';
 import BanScreen from '../components/ban-screen';
 import { GameSocketProvider, useGameSocket } from '../socket-context';
 import type { GamePlayer, GameResult } from '../socket-context';
@@ -125,7 +127,7 @@ function ResultScreen({ result }: { result: GameResult }) {
 function GameContent() {
 	const { gameId } = useParams<{ gameId: string }>();
 	const { user } = useAuth();
-	const { connected, game, result, error, connect, forfeit, ban, submit, shareCode } = useGameSocket();
+	const { socket, connected, game, result, error, connect, forfeit, ban, submit, shareCode } = useGameSocket();
 	const joined = connected && game !== null;
 	const playing = joined && game.phase === 'playing' && !result;
 	const banning = joined && game.phase === 'banning' && !result;
@@ -187,7 +189,14 @@ function GameContent() {
 							{playing && (
 								<div className="overflow-hidden rounded-xl border border-line">
 									<EditorProvider questionIds={game.problemPool.map((problem) => problem.questionId)} submit={submit} shareCode={shareCode}>
-										<EditorLayout />
+										{/* Team chat (US-3-T-2) goes over the game socket, so only teammates see it. */}
+										<EditorLayout
+											belowQuestion={(
+												<ChatProvider socket={socket}>
+													<TeamChat />
+												</ChatProvider>
+											)}
+										/>
 									</EditorProvider>
 								</div>
 							)}
