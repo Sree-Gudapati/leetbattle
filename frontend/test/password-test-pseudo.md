@@ -1,3 +1,8 @@
+// US5-Task13 (#98): changing the password keeps Settings signed in (AuthService is faked with a stubbed fetch)
+
+ // AuthService signs out older sessions after a password change, and answers with a new token
+ //  - After changing the password in Settings, the new token from POST /password should be stored
+
 // US5-Task10 (#85): show password (no backend involved)
 
  // A password field should hide what is typed until the player asks to see it

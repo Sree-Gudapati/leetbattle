@@ -267,3 +267,30 @@ describe('choosing a new password from the emailed link', () => {
 		expect(screen.queryByLabelText('New password')).toBeNull();
 	});
 });
+
+// US5-Task13 (#98). Pseudocode: test/password-test-pseudo.md
+// AuthService signs out every session issued before a password change, so it
+// answers POST /password with a fresh token. Settings must keep that token, or
+// the player who just changed their password would be signed out too.
+describe('changing the password in Settings', () => {
+	beforeEach(() => {
+		mocks.user = fakeUser;
+		localStorage.setItem('authToken', 'token-from-before-the-change');
+	});
+
+	afterEach(() => localStorage.clear());
+
+	it('US5-Task13 stores the new token from POST /password', async () => {
+		stubFetch(() => jsonResponse({ message: 'password has been changed', token: 'fresh-token' }));
+		const user = userEvent.setup();
+		render(<SettingsPage />);
+
+		await user.type(field('Current password'), 'old-password');
+		await user.type(field('New password'), 'a-brand-new-password');
+		await user.click(screen.getByRole('button', { name: 'Change password' }));
+		await screen.findByText('Password changed.');
+
+		// The controller keeps the session token under "authToken" (app/login/controller.tsx).
+		expect(localStorage.getItem('authToken')).toBe('fresh-token');
+	});
+});
