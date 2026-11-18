@@ -114,13 +114,27 @@ function ForfeitControl({ onForfeit }: { onForfeit: () => void }) {
 	);
 }
 
-function ResultScreen({ result }: { result: GameResult }) {
+// The end of the match. myTeam is the viewer's team (undefined when they aren't
+// one of the players), so a draw or an onlooker gets neither Victory nor Defeat.
+// scores are the last game:state's, as the match stood when it ended.
+function ResultScreen({ result, myTeam, scores }: { result: GameResult; myTeam?: TeamId; scores?: Record<TeamId, number> }) {
+	const outcome = result.winner && myTeam ? (result.winner === myTeam ? 'Victory' : 'Defeat') : null;
 	return (
 		<section className="flex flex-col items-start gap-4 rounded-xl border border-line bg-surface p-8">
+			{outcome && <p className={`text-sm font-semibold uppercase tracking-wide ${outcome === 'Victory' ? 'text-primary' : 'text-danger'}`}>{outcome}</p>}
 			<h2 className="text-4xl font-extrabold tracking-[-0.035em]">{result.winner ? `${teamName(result.winner)} wins` : 'Draw'}</h2>
 			<p className="text-[15px] text-muted">
 				{result.winner ? `Won ${END_REASONS[result.reason]}.` : 'Time ran out with the scores level.'}
 			</p>
+			{scores && (
+				<ul aria-label="Final scores" className="flex flex-col gap-1">
+					{TEAMS.map((team) => (
+						<li key={team.id} className="flex items-baseline gap-3 text-[15px]">
+							<span className={`font-semibold ${team.nameColor}`}>{team.name}</span> <span className="tabular-nums">{scores[team.id]}</span>
+						</li>
+					))}
+				</ul>
+			)}
 			<Link href="/lobby" className={`${BUTTON} min-h-11 bg-primary text-on-primary`}>Back to lobby</Link>
 		</section>
 	);
@@ -199,7 +213,7 @@ function GameContent() {
 						)}
 					</div>
 
-					{result && <ResultScreen result={result} />}
+					{result && <ResultScreen result={result} myTeam={myTeam} scores={game?.scores} />}
 
 					{error && !result && (
 						<div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
