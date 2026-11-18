@@ -33,6 +33,15 @@ This was already handled in the initial implementation so it will be tests only 
 - Messages older than 10 days are deleted from `team_messages`.
 - Cleanup runs whenever a game ends.
 
+### Files touched
+- `service/GameService/src/server.ts`
+- `service/GameService/src/service.ts`
+- `frontend/app/editor/chat-context.tsx`
+- `frontend/app/editor/components/team-chat.tsx`
+- `service/GameService/test/chat.test.ts`
+- `frontend/test/chat.test.tsx`
+- `service/GameService/test/chat-test-pseudo.md` 
+- `frontend/test/chat-test-pseudo.md`
 
 
 ## Requirements
