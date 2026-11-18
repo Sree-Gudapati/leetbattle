@@ -397,4 +397,10 @@ describe('unsafe text in chat messages', () => {
 		expect(panel.querySelector('script')).toBeNull();
 		expect(panel.querySelector('img')).toBeNull();
 	});
+
+	it('US-3-T-4 shows a message containing SQL as plain text', () => {
+		showIncoming('\'); DROP TABLE team_messages; --');
+
+		expect(screen.getByTestId('chat-text').textContent).toBe('\'); DROP TABLE team_messages; --');
+	});
 });
