@@ -89,6 +89,9 @@ export interface GameState {
 	// submission is being graded, and when the team may next submit.
 	submitting: Record<TeamId, boolean>;
 	cooldownUntil: Record<TeamId, number>;
+	// When each player's last team chat message was accepted (see `chat:send`
+	// in src/server.ts), so a player can send at most one message per second.
+	lastChatAt: Map<string, number>; // userId -> Date.now()
 	// Server-side timers driving the match - all owned by src/server.ts.
 	timers: {
 		join?: NodeJS.Timeout; // ends the join wait
@@ -255,6 +258,7 @@ export async function createGame(req: Request, res: Response, next: NextFunction
 			bestScore: { a: new Map(), b: new Map() },
 			submitting: { a: false, b: false },
 			cooldownUntil: { a: 0, b: 0 },
+			lastChatAt: new Map(),
 			timers: { leave: new Map() },
 		};
 		games.set(gameId, game);

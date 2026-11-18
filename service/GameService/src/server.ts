@@ -18,6 +18,8 @@ const DEFAULT_SUBMIT_COOLDOWN_MS = 5_000;
 const DEFAULT_BAN_WINDOW_MS = 30_000;
 // The longest team chat message GameService accepts, in characters.
 const MAX_CHAT_LENGTH = 500;
+// The shortest time between two team chat messages from the same player.
+const CHAT_RATE_LIMIT_MS = 1_000;
 
 interface ServerOptions {
 	origins?: string[];
@@ -332,6 +334,11 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 			const text = message?.text;
 			if (typeof text !== 'string') return;
 			if (text.length > MAX_CHAT_LENGTH) return reply({ error: 'Message too long' });
+			// Keyed by user, not socket, so a second tab shares the limit. Only
+			// accepted messages are recorded, so a rejected one doesn't count.
+			const now = Date.now();
+			if (now - (game.lastChatAt.get(user.id) ?? 0) < CHAT_RATE_LIMIT_MS) return reply({ error: 'Whoa, slow down!' });
+			game.lastChatAt.set(user.id, now);
 			let saved: { id: string; sent_at: Date };
 			try {
 				const { rows } = await pool.query(
