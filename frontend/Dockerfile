@@ -6,10 +6,12 @@ COPY . .
 
 ARG NEXT_PUBLIC_CODE_URL
 ARG NEXT_PUBLIC_AUTH_URL
+ARG NEXT_PUBLIC_GAME_URL=https://gameservice-6raq3sj3ba-ew.a.run.app
 ARG NEXT_PUBLIC_LOBBY_URL=https://lobbyservice-6raq3sj3ba-ew.a.run.app
 ENV NEXT_PUBLIC_CODE_URL=https://codeservice-1040040326387.europe-west1.run.app
 ENV NEXT_PUBLIC_AUTH_URL=https://authservice-1040040326387.us-west1.run.app
 ENV NEXT_PUBLIC_LOBBY_URL=$NEXT_PUBLIC_LOBBY_URL
+ENV NEXT_PUBLIC_GAME_URL=$NEXT_PUBLIC_GAME_URL
 
 RUN npm run build
 
