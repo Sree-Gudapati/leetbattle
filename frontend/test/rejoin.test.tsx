@@ -1,15 +1,16 @@
 // US-6-T-8 (all API and WebSocket responses are mocked; no real services are called)
-// US-6-T-8 App should check for an active match without blocking navigation
-//  - On initial load with a signed-in user, the app should request GET /game/<userId> with the login token
+// US-6-T-8 App should check for an active match on the lobby page without blocking it
+//  - When a signed-in user opens the lobby page, the app should request GET /game/<userId> with the login token
 //  - When no user is signed in, the app should not request GET /game/<userId>
-//  - After a route change, the app should request GET /game/<userId> again
-//  - While the check is still pending, the new page's content should already be rendered
-//  - On a /game/<gameId> route, the app should not request GET /game/<userId>
-// US-6-T-8 Navigation should show Rejoin Match while the player has an active match
-//  - When the check returns an active match, a "Rejoin Match" button should be shown
-//  - After a refresh (fresh render) with an active match, a "Rejoin Match" button should be shown
+//  - When the player comes back to the lobby from another page, the app should request GET /game/<userId> again
+//  - While the check is still pending, the lobby page's content should already be rendered
+//  - On a page other than the lobby, the app should not request GET /game/<userId>
+// US-6-T-8 The lobby page should show Rejoin Match while the player has an active match
+//  - When the check returns an active match, a "Rejoin Match" button should be shown on the lobby page
+//  - After refreshing the lobby page (fresh render) with an active match, a "Rejoin Match" button should be shown
 //  - When the check returns 404, no "Rejoin Match" button should be shown
 //  - When the check fails with a network error, no "Rejoin Match" button should be shown
+//  - After leaving the lobby for another page, no "Rejoin Match" button should be shown there
 // US-6-T-8 Clicking Rejoin Match should return the player to their match
 //  - Clicking "Rejoin Match" should navigate to the gameRoute from the check (/game/<gameId>)
 //  - On the game page reached by rejoining, the socket should connect with the same gameId
@@ -27,7 +28,7 @@ import type { User } from '../app/login/controller';
 // route), the signed-in user, and socket.io-client (so the game page's
 // socket never opens a real connection).
 const mocks = vi.hoisted(() => ({
-	pathname: '/home',
+	pathname: '/lobby',
 	push: vi.fn(),
 	user: null as User | null,
 	io: vi.fn(),
@@ -98,15 +99,16 @@ function stubCheck(answer: () => Response | Promise<Response>) {
 	return stubFetch(() => answer());
 }
 
-// The app shell as the root layout builds it: the rejoin check around whatever page is open.
-function renderApp(page: ReactNode = <p>Settings page</p>) {
+// The app shell as the root layout builds it: the rejoin check around whatever
+// page is open (by default the lobby, at the mocked pathname '/lobby').
+function renderApp(page: ReactNode = <p>Lobby page</p>) {
 	return render(<RejoinProvider>{page}</RejoinProvider>);
 }
 
 // Lets pending fetches and effects settle, for tests that check nothing happened.
 const settle = () => act(() => new Promise((resolve) => setTimeout(resolve, 20)));
 
-// Plays out a rejoin: the player sees Rejoin Match on another page, clicks it,
+// Plays out a rejoin: the player sees Rejoin Match on the lobby page, clicks it,
 // and the app moves to the game page. Resolves with the game page's fake socket.
 async function rejoinIntoGame() {
 	const fake = fakeSocket();
@@ -122,7 +124,7 @@ async function rejoinIntoGame() {
 beforeEach(() => {
 	vi.clearAllMocks();
 	vi.unstubAllGlobals();
-	mocks.pathname = '/home';
+	mocks.pathname = '/lobby';
 	mocks.user = fakeUser;
 	localStorage.setItem('authToken', TOKEN);
 });
@@ -133,7 +135,7 @@ afterEach(() => {
 });
 
 describe('US-6-T-8 checking for an active match', () => {
-	it('US-6-T-8 requests GET /game/<userId> with the login token on initial load', async () => {
+	it('US-6-T-8 requests GET /game/<userId> with the login token when the lobby page opens', async () => {
 		const fetch = stubCheck(() => jsonResponse(ACTIVE_MATCH));
 		renderApp();
 		await waitFor(() => expect(requestsOf(fetch)[0]).toMatchObject({ url: CHECK_URL, headers: { Authorization: `Bearer ${TOKEN}` } }));
@@ -147,40 +149,43 @@ describe('US-6-T-8 checking for an active match', () => {
 		expect(fetch).not.toHaveBeenCalled();
 	});
 
-	it('US-6-T-8 checks again after a route change', async () => {
+	// Lobby -> settings -> lobby: one check per lobby visit, none on the settings page.
+	it('US-6-T-8 checks again when the player comes back to the lobby', async () => {
 		const fetch = stubCheck(() => jsonResponse(ACTIVE_MATCH));
 		const app = renderApp();
 		await screen.findByRole('button', { name: 'Rejoin Match' });
 		mocks.pathname = '/settings';
 		app.rerender(<RejoinProvider><p>Settings page</p></RejoinProvider>);
+		mocks.pathname = '/lobby';
+		app.rerender(<RejoinProvider><p>Lobby page</p></RejoinProvider>);
 		await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
 	});
 
 	// The check never answers here, so the page only shows if it doesn't wait for it.
-	it('US-6-T-8 renders the page while the check is still pending', () => {
+	it('US-6-T-8 renders the lobby page while the check is still pending', () => {
 		stubCheck(() => new Promise<Response>(() => undefined));
 		renderApp();
-		expect(screen.getByText('Settings page')).toBeTruthy();
+		expect(screen.getByText('Lobby page')).toBeTruthy();
 	});
 
-	it('US-6-T-8 does not check on a /game/<gameId> route', async () => {
-		mocks.pathname = '/game/game-1';
+	it('US-6-T-8 does not check on a page other than the lobby', async () => {
+		mocks.pathname = '/settings';
 		const fetch = stubCheck(() => jsonResponse(ACTIVE_MATCH));
-		renderApp();
+		renderApp(<p>Settings page</p>);
 		await settle();
 		expect(fetch).not.toHaveBeenCalled();
 	});
 });
 
-describe('US-6-T-8 Rejoin Match in the navigation', () => {
-	it('US-6-T-8 shows Rejoin Match when the player has an active match', async () => {
+describe('US-6-T-8 Rejoin Match on the lobby page', () => {
+	it('US-6-T-8 shows Rejoin Match on the lobby page when the player has an active match', async () => {
 		stubCheck(() => jsonResponse(ACTIVE_MATCH));
 		renderApp();
 		expect(await screen.findByRole('button', { name: 'Rejoin Match' })).toBeTruthy();
 	});
 
 	// A refresh throws the app away and renders it again from nothing.
-	it('US-6-T-8 shows Rejoin Match again after a refresh', async () => {
+	it('US-6-T-8 shows Rejoin Match again after refreshing the lobby page', async () => {
 		stubCheck(() => jsonResponse(ACTIVE_MATCH));
 		const first = renderApp();
 		await screen.findByRole('button', { name: 'Rejoin Match' });
@@ -200,6 +205,16 @@ describe('US-6-T-8 Rejoin Match in the navigation', () => {
 		stubCheck(() => Promise.reject(new TypeError('Failed to fetch')));
 		renderApp();
 		await settle();
+		expect(screen.queryByRole('button', { name: 'Rejoin Match' })).toBeNull();
+	});
+
+	// The lobby found a match, so only the page change can explain the button being gone.
+	it('US-6-T-8 does not show Rejoin Match on a page other than the lobby', async () => {
+		stubCheck(() => jsonResponse(ACTIVE_MATCH));
+		const app = renderApp();
+		await screen.findByRole('button', { name: 'Rejoin Match' });
+		mocks.pathname = '/settings';
+		app.rerender(<RejoinProvider><p>Settings page</p></RejoinProvider>);
 		expect(screen.queryByRole('button', { name: 'Rejoin Match' })).toBeNull();
 	});
 });
@@ -232,16 +247,16 @@ describe('US-6-T-8 a match that ended before the rejoin', () => {
 		expect((await screen.findByRole('alert')).textContent).toContain('This match is no longer available.');
 	});
 
-	// Rejoin Match isn't shown on the game page itself, so the player goes back
-	// to another page to look. The next check never answers, so only a cleared
-	// button (not a fresh 404) can explain it being gone.
+	// Rejoin Match is only on the lobby page, so the player goes back there to
+	// look. The next check never answers, so only a cleared button (not a
+	// fresh 404) can explain it being gone.
 	it('US-6-T-8 clears Rejoin Match once the match is no longer available', async () => {
 		const { fire, app } = await rejoinIntoGame();
 		await fire('connect_error', new Error('not-in-game'));
 		await screen.findByRole('alert');
 		stubCheck(() => new Promise<Response>(() => undefined));
-		mocks.pathname = '/settings';
-		app.rerender(<RejoinProvider><p>Settings page</p></RejoinProvider>);
+		mocks.pathname = '/lobby';
+		app.rerender(<RejoinProvider><p>Lobby page</p></RejoinProvider>);
 		await settle();
 		expect(screen.queryByRole('button', { name: 'Rejoin Match' })).toBeNull();
 	});

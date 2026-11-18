@@ -9,9 +9,11 @@
 //  - The response should include the GameService WebSocket URL as socketUrl
 //  - The response should include "/game/<gameId>" as gameRoute
 //  - A request for the token's own user with no active match should return 404
+//  - When the player has an older match that never ended but GameService is no longer running it, the response should give the gameId of their live match
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { request } from './setup';
+import { pool } from '../src/db';
 import { TEST_SECRET, fakeCodeServiceFetch, loginTokenFor, sixReadyPlayers } from './fixtures';
 
 // The WebSocket URL GameService is configured to hand out. A value no default
@@ -85,6 +87,23 @@ describe('US-6-T-8 GET /game/:id tells the player how to rejoin', () => {
 	it('US-6-T-8 returns /game/<gameId> as gameRoute', async () => {
 		const res = await getGameAs(playerId, playerId);
 		expect(res.body.gameRoute).toBe(`/game/${gameId}`);
+	});
+
+	// A GameService restart (e.g. a deploy) forgets the matches it was running
+	// but leaves their rows without an ended_at. Rejoining one of those would be
+	// refused, so the lookup has to skip it for the match that is really live.
+	it('US-6-T-8 returns the live match, not an older one GameService is no longer running', async () => {
+		const players = sixReadyPlayers();
+		const leftover = await pool.query<{ game_id: string }>(
+			'INSERT INTO game (started_at) VALUES (NOW() - INTERVAL \'1 day\') RETURNING game_id',
+		);
+		await pool.query(
+			'INSERT INTO players (game_id, user_id, display_name) VALUES ($1, $2, $3)',
+			[leftover.rows[0].game_id, players[0].userId, players[0].displayName],
+		);
+		const live = await request.put('/game').send({ players });
+		const res = await getGameAs(players[0].userId, players[0].userId);
+		expect(res.body.gameId).toBe(live.body.gameId);
 	});
 
 	it('US-6-T-8 returns 404 when the player has no active match', async () => {

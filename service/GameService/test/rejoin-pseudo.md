@@ -10,3 +10,4 @@
  //  - The response should include the GameService WebSocket URL as socketUrl
  //  - The response should include "/game/<gameId>" as gameRoute
  //  - A request for the token's own user with no active match should return 404
+ //  - When the player has an older match that never ended but GameService is no longer running it, the response should give the gameId of their live match

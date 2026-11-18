@@ -4,6 +4,7 @@ import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, u
 import { io } from 'socket.io-client';
 import type { Socket } from 'socket.io-client';
 import { getToken } from '../login/controller';
+import { useRejoin } from '../_shared/rejoin-context';
 import { useAuth } from '../login/context';
 import type { TeamId } from '../lobby/socket-context';
 import type { SubmitResult } from '../editor/controller';
@@ -101,8 +102,19 @@ const REFUSALS: Record<string, string> = {
 	'not-in-game': 'You are not a player in this match.',
 };
 
+// US-6-T-8: shown instead of "not a player" when a match the player was
+// rejoining ended before they got back in.
+const MATCH_UNAVAILABLE = 'This match is no longer available.';
+
 export function GameSocketProvider({ children }: { children: ReactNode }) {
 	const { user } = useAuth();
+	// The match the Rejoin Match button offered, read when a connection is
+	// refused; a ref so connect() doesn't change every time the check runs.
+	const rejoin = useRejoin();
+	const rejoinRef = useRef(rejoin);
+	useEffect(() => {
+		rejoinRef.current = rejoin;
+	}, [rejoin]);
 	const [socket, setSocket] = useState<Socket | null>(null);
 	const [connected, setConnected] = useState(false);
 	const [game, setGame] = useState<GameState | null>(null);
@@ -130,6 +142,13 @@ export function GameSocketProvider({ children }: { children: ReactNode }) {
 		});
 		nextSocket.on('game:ended', (ended: GameResult) => setResult(ended));
 		nextSocket.on('connect_error', (reason: Error) => {
+			// GameService forgets a match once it ends, so rejoining one that ended
+			// in the meantime is refused as not-in-game.
+			if (reason.message === 'not-in-game' && rejoinRef.current?.match?.gameId === gameId) {
+				rejoinRef.current.clear(gameId);
+				setError({ code: 'match-unavailable', message: MATCH_UNAVAILABLE });
+				return;
+			}
 			const refusal = REFUSALS[reason.message];
 			setError(refusal
 				? { code: reason.message, message: refusal }
