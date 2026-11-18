@@ -3,17 +3,7 @@ import HomeNav from '../_shared/home-nav';
 import Wordmark from '../_shared/wordmark';
 import Intro from './intro';
 import MatchDemo from './match-demo';
-
-const STEPS = [
-	{ n: '01', title: 'Queue up', body: 'Join ranked matchmaking or share a room code with friends. Six players, two teams, one problem set.' },
-	{ n: '02', title: 'Solve together', body: 'Write code in the browser IDE, watch your teammates live, and comment directly on their lines.' },
-	{ n: '03', title: 'Climb the ranks', body: 'Hidden tests grade every submission. The higher team score wins, and your rating moves with each match.' },
-];
-
-const MODES = [
-	{ name: 'Team 3v3', desc: 'Highest team score when time runs out wins.', live: true },
-	{ name: 'Duel 1v1', desc: 'Coming soon.', live: false },
-];
+import ScrollSections from './scroll-sections';
 
 export default function LandingPage() {
 	return (
@@ -26,8 +16,6 @@ export default function LandingPage() {
 						<Wordmark />
 					</Link>
 					<div className="flex flex-wrap items-center gap-6 text-[15px] text-muted">
-						<a href="#how" className="hidden hover:text-ink md:inline">How it works</a>
-						<a href="#modes" className="hidden hover:text-ink md:inline">Modes</a>
 						<HomeNav />
 					</div>
 				</nav>
@@ -59,30 +47,7 @@ export default function LandingPage() {
 					<MatchDemo />
 				</div>
 
-				<section id="how" className="flex flex-col gap-10 pt-10 pb-22">
-					<h2 className="m-0 text-[40px] font-extrabold leading-none tracking-[-0.03em]">How it works</h2>
-					<div className="grid gap-10 [grid-template-columns:repeat(auto-fit,minmax(240px,1fr))]">
-						{STEPS.map((step) => (
-							<div key={step.n} className="flex flex-col gap-3 border-t border-line pt-[22px]">
-								<span className="font-mono text-[13px] font-semibold text-primary">{step.n}</span>
-								<h3 className="m-0 text-[22px] font-bold">{step.title}</h3>
-								<p className="m-0 text-[15px] leading-relaxed text-muted">{step.body}</p>
-							</div>
-						))}
-					</div>
-				</section>
-
-				<section id="modes" className="flex flex-col gap-10 pt-6 pb-24">
-					<h2 className="m-0 text-[40px] font-extrabold leading-none tracking-[-0.03em]">Modes</h2>
-					<div className="grid gap-10 [grid-template-columns:repeat(auto-fit,minmax(220px,1fr))]">
-						{MODES.map((mode) => (
-							<div key={mode.name} className={`flex flex-col gap-2.5 border-t pt-[22px] ${mode.live ? 'border-primary' : 'border-line'}`}>
-								<h3 className={`m-0 text-[22px] font-bold ${mode.live ? 'text-ink' : 'text-muted'}`}>{mode.name}</h3>
-								<p className="m-0 text-[15px] leading-relaxed text-muted">{mode.desc}</p>
-							</div>
-						))}
-					</div>
-				</section>
+				<ScrollSections />
 
 				<footer className="flex flex-wrap justify-between gap-4 border-t border-line pt-7 pb-10 text-sm text-muted">
 					<span><Wordmark /></span>
