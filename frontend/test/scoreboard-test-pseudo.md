@@ -26,3 +26,11 @@
 
  // The match screen should display the scoreboard
  //  - When the match screen loads, the scoreboard should be displayed
+
+// US5-Task17 (#133): the scoreboard is one compact line
+//  - The scoreboard should show Team 1's score, the time left and Team 2's score, in that order
+//  - The scoreboard should not show the recent submissions list
+//  - The scoreboard should not show "No submissions yet"
+//  - The scoreboard should not show a "Time left" label
+//  - The timer should still be labelled "Time left" for screen readers
+//  (replaces the US4-Task4 "Time left" label test and the recent submissions tests)
