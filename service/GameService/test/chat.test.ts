@@ -208,7 +208,7 @@ afterAll(() => {
 });
 
 describe('team chat delivery', () => {
-	it('delivers a chat:send as a chat:message to every connected teammate', async () => {
+	it('US-3-T-2 delivers a chat:send as a chat:message to every connected teammate', async () => {
 		// Player 0 (team a) sends; players 1 and 2 are their teammates.
 		const teammates = [nextEvent<ChatMessage>(sockets[1], 'chat:message'), nextEvent<ChatMessage>(sockets[2], 'chat:message')];
 		sockets[0].emit('chat:send', { text: 'hello team' });
@@ -216,13 +216,13 @@ describe('team chat delivery', () => {
 		expect(received.map((message) => message.text)).toEqual(['hello team', 'hello team']);
 	});
 
-	it('sends the sender their own chat:message', async () => {
+	it('US-3-T-2 sends the sender their own chat:message', async () => {
 		const own = nextEvent<ChatMessage>(sockets[0], 'chat:message');
 		sockets[0].emit('chat:send', { text: 'hello team' });
 		expect((await own).text).toBe('hello team');
 	});
 
-	it('sends the message id, sender\'s user id, display name, team, text and sent time on chat:message', async () => {
+	it('US-3-T-2 sends the message id, sender\'s user id, display name, team, text and sent time on chat:message', async () => {
 		const received = nextEvent<ChatMessage>(sockets[1], 'chat:message');
 		sockets[0].emit('chat:send', { text: 'hello team' });
 		// The id and sent time are made by the server, so only their type is known here.
@@ -236,7 +236,7 @@ describe('team chat delivery', () => {
 		});
 	});
 
-	it('does not deliver a chat:message to a player on the other team', async () => {
+	it('US-3-T-2 does not deliver a chat:message to a player on the other team', async () => {
 		// Player 3 is on team b; record anything they receive.
 		const otherTeam: ChatMessage[] = [];
 		sockets[3].on('chat:message', (message: ChatMessage) => otherTeam.push(message));
@@ -251,14 +251,14 @@ describe('team chat delivery', () => {
 });
 
 describe('team chat message length', () => {
-	it('delivers a chat:send with no more than 500 characters', async () => {
+	it('US-3-T-2 delivers a chat:send with no more than 500 characters', async () => {
 		const longest = 'a'.repeat(500);
 		const teammate = nextEvent<ChatMessage>(sockets[1], 'chat:message');
 		sockets[0].emit('chat:send', { text: longest });
 		expect((await teammate).text).toBe(longest);
 	});
 
-	it('does not send a chat:message for a chat:send longer than 500 characters', async () => {
+	it('US-3-T-2 does not send a chat:message for a chat:send longer than 500 characters', async () => {
 		// Record every message the teammate receives.
 		const received: string[] = [];
 		sockets[1].on('chat:message', (message: ChatMessage) => received.push(message.text));
@@ -271,7 +271,7 @@ describe('team chat message length', () => {
 		expect(received).toEqual(['follow-up']);
 	});
 
-	it('answers a chat:send longer than 500 characters with "Message too long"', async () => {
+	it('US-3-T-2 answers a chat:send longer than 500 characters with "Message too long"', async () => {
 		// Like game:ban and game:submit, the answer comes back on the event's acknowledgement.
 		const answer = await sockets[0].timeout(2_000).emitWithAck('chat:send', { text: 'a'.repeat(501) });
 		expect(answer).toEqual({ error: 'Message too long' });
@@ -279,7 +279,7 @@ describe('team chat message length', () => {
 });
 
 describe('saving team chat messages', () => {
-	it('adds one row to team_messages for a valid chat:send', async () => {
+	it('US-3-T-2 adds one row to team_messages for a valid chat:send', async () => {
 		// The message is saved before it is sent out, so once the teammate has it the row exists.
 		const teammate = nextEvent<ChatMessage>(sockets[1], 'chat:message');
 		sockets[0].emit('chat:send', { text: 'hello team' });
@@ -288,33 +288,33 @@ describe('saving team chat messages', () => {
 		expect(rows[0].count).toBe(1);
 	});
 
-	it('saves the game\'s id on the row', async () => {
+	it('US-3-T-2 saves the game\'s id on the row', async () => {
 		const row = await sendAndReadSavedRow();
 		expect(row.game_id).toBe(gameId);
 	});
 
-	it('saves the sender\'s team on the row', async () => {
+	it('US-3-T-2 saves the sender\'s team on the row', async () => {
 		const row = await sendAndReadSavedRow();
 		expect(row.team).toBe('a');
 	});
 
-	it('saves the sender\'s user id on the row', async () => {
+	it('US-3-T-2 saves the sender\'s user id on the row', async () => {
 		const row = await sendAndReadSavedRow();
 		expect(row.user_id).toBe(players[0].userId);
 	});
 
-	it('saves a sent time on the row', async () => {
+	it('US-3-T-2 saves a sent time on the row', async () => {
 		const row = await sendAndReadSavedRow();
 		// pg turns a set TIMESTAMPTZ into a Date (and an unset one into null).
 		expect(row.sent_at).toBeInstanceOf(Date);
 	});
 
-	it('saves the message body as text on the row', async () => {
+	it('US-3-T-2 saves the message body as text on the row', async () => {
 		const row = await sendAndReadSavedRow('saved body');
 		expect(row.text).toBe('saved body');
 	});
 
-	it('does not save a chat:send longer than 500 characters', async () => {
+	it('US-3-T-2 does not save a chat:send longer than 500 characters', async () => {
 		// The "Message too long" answer means the server is done with this message.
 		await sockets[0].timeout(2_000).emitWithAck('chat:send', { text: 'a'.repeat(501) });
 		const { rows } = await pool.query('SELECT COUNT(*)::int AS count FROM team_messages WHERE game_id = $1', [gameId]);
@@ -323,7 +323,7 @@ describe('saving team chat messages', () => {
 });
 
 describe('team chat after the game has ended', () => {
-	it('sends no chat:message for a chat:send sent after game:ended', async () => {
+	it('US-3-T-2 sends no chat:message for a chat:send sent after game:ended', async () => {
 		// The players' sockets close as the game ends, so a message sent after
 		// that would reach no client; watch what the server sends out instead.
 		const broadcast = vi.spyOn(gameServer.io.of('/').adapter, 'broadcast');
@@ -337,7 +337,7 @@ describe('team chat after the game has ended', () => {
 });
 
 describe('team chat with two games running', () => {
-	it('does not deliver a chat:send in one game to the players of the other game', async () => {
+	it('US-3-T-2 does not deliver a chat:send in one game to the players of the other game', async () => {
 		const other = await secondGame();
 		// Record anything any player of the other game receives.
 		const otherGame: ChatMessage[] = [];
@@ -351,7 +351,7 @@ describe('team chat with two games running', () => {
 		expect(otherGame).toEqual([]);
 	});
 
-	it('saves the id of the game the message was sent in', async () => {
+	it('US-3-T-2 saves the id of the game the message was sent in', async () => {
 		const other = await secondGame();
 		// Sent in the second game this time, so a row saved under the test's game would show up.
 		const teammate = nextEvent<ChatMessage>(other.sockets[1], 'chat:message');
@@ -361,7 +361,7 @@ describe('team chat with two games running', () => {
 		expect(rows[0].game_id).toBe(other.gameId);
 	});
 
-	it('does not save a chat:send sent after game:ended', async () => {
+	it('US-3-T-2 does not save a chat:send sent after game:ended', async () => {
 		await sendChatAsGameEnds('too late');
 		// Give a (wrongly) accepted message time to finish saving.
 		await new Promise((resolve) => setTimeout(resolve, 100));
