@@ -87,6 +87,20 @@
 //  (extends the approved US-6-T-7 draft: a teammate's workspace also has its own question switcher,
 //  independent of your own, so you can look at their other match questions too)
 //  - Switching the teammate's own question switcher should show that question's code for the teammate
+// US-6-T-11: The result screen should tell the player whether they won
+//  - When the player's team wins, "Victory" should be displayed
+//  - When the player's team wins, "Defeat" should not be displayed
+//  - When the other team wins, "Defeat" should be displayed
+//  - When the other team wins, "Victory" should not be displayed
+//  - When the game is a draw, neither "Victory" nor "Defeat" should be displayed
+//  - When the signed-in user isn't one of the match's players, neither "Victory" nor "Defeat" should be displayed
+// The result screen should show the final scores
+//  - With scores of 450 to 300, the "Final scores" list should show "Team 1 450" then "Team 2 300"
+//  - A team that finished on 0 points should show "0" in the "Final scores" list
+// The rest of the result screen should stay as it was
+//  - The "Team 1 wins" heading should still be displayed
+//  - The line explaining why the game ended should still be displayed
+//  - The "Back to lobby" link should still be displayed
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -444,6 +458,106 @@ describe('game page result', () => {
 		render(<GamePage />);
 
 		expect(screen.queryByRole('button', { name: 'Forfeit' })).toBeNull();
+	});
+});
+
+// US-6-T-11: the result screen speaks to the player looking at it and shows
+// the final score. The signed-in user is always u1 ("Ada"), who is on Team 1
+// (team a) in the default roster, so a win for team a is a win for the viewer.
+describe('game page result for the viewing player', () => {
+	// The match as it stood when it ended: the last game:state the page saw
+	// (scores and roster), plus the game:ended result.
+	function configureEndedGame(result: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
+		configureGame({ connected: false, game: gameState(overrides), result });
+	}
+
+	// Exact-text matcher for either line, so "Victory" in some other sentence
+	// can't make a "neither is shown" test fail or pass by accident.
+	const victoryOrDefeat = /^(Victory|Defeat)$/;
+
+	// The "Final scores" list's items as plain text, whitespace collapsed, so
+	// "<span>Team 1</span> <span>450</span>" reads as "Team 1 450".
+	function finalScores() {
+		const list = screen.getByRole('list', { name: 'Final scores' });
+		return within(list).getAllByRole('listitem').map((item) => (item.textContent ?? '').replace(/\s+/g, ' ').trim());
+	}
+
+	it('US-6-T-11 shows Victory when the player\'s team wins', () => {
+		configureEndedGame({ winner: 'a', reason: 'time' });
+		render(<GamePage />);
+
+		expect(screen.getByText('Victory')).toBeTruthy();
+	});
+
+	it('US-6-T-11 does not show Defeat when the player\'s team wins', () => {
+		configureEndedGame({ winner: 'a', reason: 'time' });
+		render(<GamePage />);
+
+		expect(screen.queryByText('Defeat')).toBeNull();
+	});
+
+	it('US-6-T-11 shows Defeat when the other team wins', () => {
+		configureEndedGame({ winner: 'b', reason: 'forfeit' });
+		render(<GamePage />);
+
+		expect(screen.getByText('Defeat')).toBeTruthy();
+	});
+
+	it('US-6-T-11 does not show Victory when the other team wins', () => {
+		configureEndedGame({ winner: 'b', reason: 'forfeit' });
+		render(<GamePage />);
+
+		expect(screen.queryByText('Victory')).toBeNull();
+	});
+
+	it('US-6-T-11 shows neither Victory nor Defeat for a draw', () => {
+		configureEndedGame({ winner: null, reason: 'time' });
+		render(<GamePage />);
+
+		expect(screen.queryByText(victoryOrDefeat)).toBeNull();
+	});
+
+	it('US-6-T-11 shows neither Victory nor Defeat to someone who is not a player', () => {
+		// The roster without u1: the signed-in user has no team in this match.
+		configureEndedGame({ winner: 'a', reason: 'time' }, { players: roster.filter((entry) => entry.userId !== 'u1') });
+		render(<GamePage />);
+
+		expect(screen.queryByText(victoryOrDefeat)).toBeNull();
+	});
+
+	it('US-6-T-11 lists each team\'s final score, Team 1 first', () => {
+		configureEndedGame({ winner: 'a', reason: 'time' }, { scores: { a: 450, b: 300 } });
+		render(<GamePage />);
+
+		expect(finalScores()).toEqual(['Team 1 450', 'Team 2 300']);
+	});
+
+	it('US-6-T-11 shows 0 for a team that finished without points', () => {
+		configureEndedGame({ winner: 'b', reason: 'time' }, { scores: { a: 0, b: 150 } });
+		render(<GamePage />);
+
+		expect(finalScores()[0]).toBe('Team 1 0');
+	});
+
+	it('US-6-T-11 still shows the winning team heading', () => {
+		configureEndedGame({ winner: 'a', reason: 'time' }, { scores: { a: 450, b: 300 } });
+		render(<GamePage />);
+
+		expect(screen.getByRole('heading', { name: 'Team 1 wins' })).toBeTruthy();
+	});
+
+	it('US-6-T-11 still says why the game ended', () => {
+		configureEndedGame({ winner: 'a', reason: 'time' }, { scores: { a: 450, b: 300 } });
+		render(<GamePage />);
+
+		expect(screen.getByText(/when time ran out/)).toBeTruthy();
+	});
+
+	it('US-6-T-11 still links back to the lobby', () => {
+		configureEndedGame({ winner: 'a', reason: 'time' }, { scores: { a: 450, b: 300 } });
+		render(<GamePage />);
+
+		expect(screen.getByRole('link', { name: 'Back to lobby' })).toBeTruthy();
 	});
 });
 
