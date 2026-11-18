@@ -3,6 +3,7 @@
 // CodeService's problem endpoint, so they live here rather than in each file.
 import { randomUUID } from 'node:crypto';
 import { vi } from 'vitest';
+import { EncryptJWT } from 'jose';
 
 export type TeamId = 'a' | 'b';
 
@@ -78,4 +79,17 @@ export function fakeCodeServiceFetch() {
 			json: () => Promise.resolve(problems),
 		} as Response);
 	});
+}
+
+// The SECRET the tests give GameService (process.env.SECRET), and a login
+// token for `userId` the way AuthService issues one: encrypted with that
+// SECRET and carrying the account's id/email.
+export const TEST_SECRET = 'local-test-secret-'.padEnd(64, 'x');
+
+export async function loginTokenFor(userId: string): Promise<string> {
+	return new EncryptJWT({ id: userId, email: `${userId}@example.test` })
+		.setProtectedHeader({ alg: 'dir', enc: 'A256CBC-HS512' })
+		.setIssuedAt()
+		.setExpirationTime('5m')
+		.encrypt(new TextEncoder().encode(TEST_SECRET));
 }

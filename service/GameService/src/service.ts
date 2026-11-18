@@ -1,9 +1,13 @@
 import { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
 import { pool } from './db';
+import { authenticateToken } from './auth';
 
 export const GAME_DURATION_MS = 20 * 60 * 1000;
 const CODE_SERVICE_URL = process.env.CODE_SERVICE_URL ?? 'http://localhost:4001';
+// Where clients open this service's WebSocket (US-6-T-8 hands it out so a
+// player can rejoin). Read per request so a deployment can set it at start-up.
+const gameSocketUrl = () => process.env.GAME_SOCKET_URL ?? 'http://localhost:4004';
 
 const readyPlayerSchema = z.object({
 	userId: z.uuid(),
@@ -260,21 +264,37 @@ export async function createGame(req: Request, res: Response, next: NextFunction
 
 // Fetches a single game's current state for the /game/[gameId] page (initial
 // load or reconnect after a dropped socket)
+// US-6-T-8: the caller's own active match, with what the client needs to
+// rejoin it. Only the logged-in player may look up their own match: the
+// Bearer token must be valid (401) and belong to the :id asked about (403).
 export async function getGame(req: Request, res: Response, next: NextFunction) {
 	const { id: userId } = req.params;
+	let callerId: string;
+	try {
+		callerId = (await authenticateToken(req.headers.authorization?.replace(/^Bearer /, ''))).id;
+	} catch {
+		return next(new HttpError(401, 'a valid login token is required'));
+	}
+	if (callerId !== userId) {
+		return next(new HttpError(403, 'you can only look up your own match'));
+	}
 	try {
 		const result = await pool.query<{ game_id: string }>(
 			`SELECT game.game_id FROM game
 			 JOIN players ON players.game_id = game.game_id
 			 WHERE players.user_id = $1 AND game.ended_at IS NULL
-			 ORDER BY game.started_at ASC
-			 LIMIT 1`,
+			 ORDER BY game.started_at DESC`,
 			[userId],
 		);
-		if (result.rows.length === 0) {
+		// A restart (e.g. a deploy) forgets the matches this service was running
+		// but leaves their rows without an ended_at, and a socket can't join
+		// those. Only a match still running here can be rejoined.
+		const live = result.rows.find((row) => findGame(row.game_id));
+		if (!live) {
 			return next(new HttpError(404, 'no active game for that player'));
 		}
-		res.json({ gameId: result.rows[0].game_id });
+		const gameId = live.game_id;
+		res.json({ gameId, socketUrl: gameSocketUrl(), gameRoute: `/game/${gameId}` });
 	} catch (err) {
 		next(err);
 	}

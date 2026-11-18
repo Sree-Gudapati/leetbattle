@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import { request } from './setup';
-import { fakeCodeServiceFetch, sixReadyPlayers } from './fixtures';
+import { TEST_SECRET, fakeCodeServiceFetch, loginTokenFor, sixReadyPlayers } from './fixtures';
 import { pool } from '../src/db';
 
 // Matches the CODE_SERVICE_URL fallback in src/service.ts (CodeService's own
@@ -18,6 +18,8 @@ const CODE_SERVICE_URL = 'http://localhost:4001';
 let codeServiceFetch: Mock;
 
 beforeAll(() => {
+	// US-6-T-8: GET /game/:id checks the caller's login token against this SECRET.
+	process.env.SECRET = TEST_SECRET;
 	codeServiceFetch = fakeCodeServiceFetch();
 	vi.stubGlobal('fetch', codeServiceFetch);
 });
@@ -193,12 +195,14 @@ describe('GET /game/:id', () => {
 	});
 
 	it('finds the active game for a player who is in one', async () => {
-		const res = await request.get(`/game/${activePlayerId}`);
+		// US-6-T-8: the endpoint now needs the player's own login token.
+		const res = await request.get(`/game/${activePlayerId}`).set('Authorization', `Bearer ${await loginTokenFor(activePlayerId)}`);
 		expect(res.body.gameId).toBe(activeGameId);
 	});
 
 	it('returns 404 for a player with no active game', async () => {
-		const res = await request.get(`/game/${randomUUID()}`);
+		const loneUserId = randomUUID();
+		const res = await request.get(`/game/${loneUserId}`).set('Authorization', `Bearer ${await loginTokenFor(loneUserId)}`);
 		expect(res.status).toBe(404);
 	});
 });

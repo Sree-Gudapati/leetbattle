@@ -4,6 +4,7 @@ import './globals.css';
 import { DEFAULT_MODE, DEFAULT_SCHEME, themeInitScript } from './theme';
 import { AuthProvider } from './login/context';
 import { LobbySocketProvider } from './lobby/socket-context';
+import { RejoinProvider } from './_shared/rejoin-context';
 
 // Self-hosted so builds (local, Docker, Cloud Build) never need to reach Google Fonts.
 const onest = localFont({
@@ -39,7 +40,10 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
 			</head>
 			<body className="min-h-full flex flex-col">
 				<AuthProvider>
-					<LobbySocketProvider>{children}</LobbySocketProvider>
+					{/* US-6-T-8: checks on every route whether the player has a match to rejoin. */}
+					<RejoinProvider>
+						<LobbySocketProvider>{children}</LobbySocketProvider>
+					</RejoinProvider>
 				</AuthProvider>
 			</body>
 		</html>
