@@ -8,7 +8,8 @@
 'use client';
 
 import { useAuth } from '../../login/context';
-import type { PoolProblem, TeamId } from '../socket-context';
+import type { PoolProblem,  } from '../socket-context';
+import type { TeamId } from '@/app/lobby/socket-context';
 
 const CARD = 'flex min-h-[168px] w-full flex-col justify-between gap-5 rounded-xl p-5 text-left';
 
