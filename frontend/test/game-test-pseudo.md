@@ -151,3 +151,18 @@
  //  - The team score shown in the header should match the game state's scores
  //  - A new game state with an updated score should update what's shown, without needing to submit again
 
+
+ // US-6-T-11: The result screen should tell the player whether they won
+ //  - When the player's team wins, "Victory" should be displayed
+ //  - When the player's team wins, "Defeat" should not be displayed
+ //  - When the other team wins, "Defeat" should be displayed
+ //  - When the other team wins, "Victory" should not be displayed
+ //  - When the game is a draw, neither "Victory" nor "Defeat" should be displayed
+ //  - When the signed-in user isn't one of the match's players, neither "Victory" nor "Defeat" should be displayed
+ // The result screen should show the final scores
+ //  - With scores of 450 to 300, the "Final scores" list should show "Team 1 450" then "Team 2 300"
+ //  - A team that finished on 0 points should show "0" in the "Final scores" list
+ // The rest of the result screen should stay as it was
+ //  - The "Team 1 wins" heading should still be displayed
+ //  - The line explaining why the game ended should still be displayed
+ //  - The "Back to lobby" link should still be displayed
