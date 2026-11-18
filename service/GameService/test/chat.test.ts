@@ -122,11 +122,10 @@ function nextState(socket: Socket, predicate: (_state: GameStatePayload) => bool
 }
 
 // Plays the test's game to its end: every player bans a different problem so
-// play starts, then team b forfeits. Player 5 casts team b's last forfeit vote
-// and sends a chat:send with `text` straight after it, so the server handles
-// that message once the game has ended but before it closes the sockets.
-// Resolves once team a has been told the game ended.
-async function sendChatAsGameEnds(text: string): Promise<void> {
+// play starts, then team b forfeits. `afterLastVote` runs straight after
+// player 5 casts team b's last forfeit vote. Resolves once team a has been
+// told the game ended.
+async function endGameByForfeit(afterLastVote: () => void = () => undefined): Promise<void> {
 	const playing = nextState(sockets[0], (state) => state.phase === 'playing');
 	for (const [i, socket] of sockets.entries()) {
 		await socket.timeout(2_000).emitWithAck('game:ban', { questionId: problemPool[i].questionId });
@@ -138,8 +137,25 @@ async function sendChatAsGameEnds(text: string): Promise<void> {
 	await twoVotes;
 	const ended = nextEvent(sockets[0], 'game:ended');
 	sockets[5].emit('game:forfeit');
-	sockets[5].emit('chat:send', { text });
+	afterLastVote();
 	await ended;
+}
+
+// Player 5 sends a chat:send with `text` straight after casting team b's last
+// forfeit vote, so the server handles that message once the game has ended
+// but before it closes the sockets.
+async function sendChatAsGameEnds(text: string): Promise<void> {
+	await endGameByForfeit(() => sockets[5].emit('chat:send', { text }));
+}
+
+// Saves a team_messages row from player 0 in the test's game, sent `daysAgo`
+// days ago, and resolves with its id.
+async function saveMessageFromDaysAgo(daysAgo: number): Promise<string> {
+	const { rows } = await pool.query<{ id: string }>(
+		"INSERT INTO team_messages (game_id, team, user_id, text, sent_at) VALUES ($1, 'a', $2, 'old message', NOW() - make_interval(days => $3)) RETURNING id",
+		[gameId, players[0].userId, daysAgo],
+	);
+	return rows[0].id;
 }
 
 // Waits until the server has processed every client disconnect, so one
@@ -418,5 +434,14 @@ describe('team chat text with SQL in it', () => {
 		// Had the text run, team_messages would be gone and this query would throw.
 		const { rows } = await pool.query('SELECT COUNT(*)::int AS count FROM team_messages WHERE game_id = $1', [gameId]);
 		expect(rows[0].count).toBe(1);
+	});
+});
+
+describe('old team chat cleanup', () => {
+	it('US-3-T-4 deletes messages older than 10 days when a game ends', async () => {
+		const id = await saveMessageFromDaysAgo(11);
+		await endGameByForfeit();
+		const { rows } = await pool.query('SELECT id FROM team_messages WHERE id = $1', [id]);
+		expect(rows).toEqual([]);
 	});
 });
