@@ -71,6 +71,9 @@ export function ChatProvider({
 						resolve(false);
 						return;
 					}
+					// An accepted message means the player has slowed down; drop the error now.
+					clearTimeout(errorTimer.current);
+					setError(null);
 					resolve(true);
 				});
 			});
