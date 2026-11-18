@@ -64,6 +64,9 @@
 //  - While playing, the match page should display a "Team chat" panel
 //  - Sending a comment on the match page should emit "chat:send" on the game socket
 //  (CodeService's fetch and Monaco are mocked; no test touches a backend service)
+// US-6-T-8: Game page should show the live team score
+//  - The team score shown in the header should match the game state's scores
+//  - A new game state with an updated score should update what's shown, without needing to submit again
 // US-6-T-7: Game page should show a workspace switcher above the code editor
 //  - While playing, a "You" workspace tab and one tab per teammate should be shown above the code tabs
 //  - The workspace switcher should never show a tab for a player on the other team
@@ -294,6 +297,23 @@ describe('game page match view', () => {
 		render(<GamePage />);
 
 		expect(screen.getByText('20:00')).toBeTruthy();
+	});
+
+	it('US-6-T-8 shows the team score from the game state', () => {
+		configureConnectedGame({ scores: { a: 120, b: 80 } });
+		render(<GamePage />);
+
+		expect(screen.getByText('120').closest('span.font-mono')?.textContent).toBe('120 – 80');
+	});
+
+	it('US-6-T-8 updates the shown score when a new game state arrives', () => {
+		configureConnectedGame({ scores: { a: 0, b: 0 } });
+		const { rerender } = render(<GamePage />);
+		configureConnectedGame({ scores: { a: 150, b: 0 } });
+
+		rerender(<GamePage />);
+
+		expect(screen.getByText('150')).toBeTruthy();
 	});
 });
 

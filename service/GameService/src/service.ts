@@ -78,6 +78,9 @@ export interface GameState {
 	workspaces: Map<string, Map<number, Workspace>>; // userId -> questionId -> workspace
 	forfeitVotes: Record<TeamId, Set<string>>; // userIds on each team who chose to forfeit
 	solved: Record<TeamId, Set<string>>; // task_ids each team has had accepted
+	// The best points a team has reached on each problem (see pointsForSubmission
+	// in src/server.ts): resubmitting only raises the team's score if it beats this.
+	bestScore: Record<TeamId, Map<string, number>>; // task_id -> points
 	// The per-team submit lock (see `game:submit` in src/server.ts): whether a
 	// submission is being graded, and when the team may next submit.
 	submitting: Record<TeamId, boolean>;
@@ -245,6 +248,7 @@ export async function createGame(req: Request, res: Response, next: NextFunction
 			workspaces: new Map(),
 			forfeitVotes: { a: new Set(), b: new Set() },
 			solved: { a: new Set(), b: new Set() },
+			bestScore: { a: new Map(), b: new Map() },
 			submitting: { a: false, b: false },
 			cooldownUntil: { a: 0, b: 0 },
 			timers: { leave: new Map() },
