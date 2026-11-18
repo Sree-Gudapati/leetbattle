@@ -12,8 +12,11 @@ export default function TeamChat() {
 		if (!canSend) {
 			return;
 		}
-		send(draft);
-		setDraft('');
+		// The box is emptied only once the message is accepted, so a rejected
+		// one (e.g. "Whoa, slow down!") can be sent again.
+		void send(draft).then((accepted) => {
+			if (accepted) setDraft('');
+		});
 	};
 
 	return (

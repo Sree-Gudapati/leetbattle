@@ -15,7 +15,8 @@ export interface ChatMessage {
 
 export interface ChatContextValue {
 	messages: ChatMessage[];
-	send: (_text: string) => void;
+	// Resolves true once the message is accepted, false if GameService refuses it.
+	send: (_text: string) => Promise<boolean>;
 	// Why GameService refused the last message (e.g. "Message too long"), if it did.
 	error: string | null;
 }
@@ -46,14 +47,20 @@ export function ChatProvider({
 		};
 	}, [socket]);
 
-	const send = (text: string) => {
+	const send = (text: string): Promise<boolean> => {
 		// Over the socket, the message only shows once GameService sends it back.
 		if (socket) {
-			// GameService answers only to refuse a message, with { error }.
-			socket.emit('chat:send', { text: text.trim() }, (response?: { error?: string }) => {
-				if (response?.error) setError(response.error);
+			// GameService answers { ok: true } once it accepts the message, or { error } to refuse it.
+			return new Promise((resolve) => {
+				socket.emit('chat:send', { text: text.trim() }, (response?: { ok?: true; error?: string }) => {
+					if (response?.error) {
+						setError(response.error);
+						resolve(false);
+						return;
+					}
+					resolve(true);
+				});
 			});
-			return;
 		}
 		setMessages((current) => [
 			...current,
@@ -64,6 +71,7 @@ export function ChatProvider({
 				text: text.trim(),
 			},
 		]);
+		return Promise.resolve(true);
 	};
 
 	return <ChatContext.Provider value={{ messages, send, error }}>{children}</ChatContext.Provider>;
