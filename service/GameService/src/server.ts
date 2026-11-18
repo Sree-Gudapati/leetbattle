@@ -20,6 +20,8 @@ const DEFAULT_BAN_WINDOW_MS = 30_000;
 const MAX_CHAT_LENGTH = 500;
 // The shortest time between two team chat messages from the same player.
 const CHAT_RATE_LIMIT_MS = 1_000;
+// How long team chat messages are kept before they are deleted, in days.
+const CHAT_RETENTION_DAYS = 10;
 
 interface ServerOptions {
 	origins?: string[];
@@ -159,6 +161,16 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 			);
 		} catch (err) {
 			console.error('[game-service] failed to persist game end', err);
+		}
+		// Deletes every game's old team chat, not just this one's. Done before
+		// game:ended goes out so it has finished when the players hear the result.
+		try {
+			await pool.query(
+				'DELETE FROM team_messages WHERE sent_at < NOW() - make_interval(days => $1)',
+				[CHAT_RETENTION_DAYS],
+			);
+		} catch (err) {
+			console.error('[game-service] failed to delete old chat messages', err);
 		}
 		io.to(gameRoom(game)).emit('game:ended', result);
 		io.in(gameRoom(game)).disconnectSockets(true);
