@@ -20,3 +20,10 @@ CREATE TABLE IF NOT EXISTS password_resets (
   user_id     UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
   expires_at  TIMESTAMPTZ NOT NULL
 );
+
+-- US-5-T-13: when the password was last reset or changed. Session tokens
+-- issued before it are signed out. NULL means it was never changed.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
+
+-- US-5-T-13: one account per email, whatever its case.
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower ON users (lower(email));

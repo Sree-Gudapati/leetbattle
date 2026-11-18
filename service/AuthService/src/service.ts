@@ -5,8 +5,18 @@ import { pool } from './db';
 import { encryptJwe } from './utils/jwe';
 import { AuthedRequest } from './middleware';
 import { mailer } from './utils/mailer';
+import { RateLimiter } from './utils/rate-limit';
 
 const RESET_TOKEN_MINUTES = 30;
+
+// US-5-T-13: at most 3 reset emails an hour to one address.
+const resetEmails = new RateLimiter(3, 60 * 60_000);
+
+// US-5-T-13: emails are compared and stored without regard to case or
+// surrounding spaces, so "Ada@x.com " and "ada@x.com" are the same account.
+function normalizeEmail(email: string): string {
+	return email.trim().toLowerCase();
+}
 
 // Only the hash of a reset token is stored, so a leaked table cannot be used to reset passwords.
 function hashResetToken(token: string): string {
@@ -37,7 +47,8 @@ export function getRoot(_req: Request, res: Response) {
 }
 
 export async function signup(req: Request, res: Response, next: NextFunction) {
-	const { email, password, name } = req.body ?? {};
+	const { password, name } = req.body ?? {};
+	const email = typeof req.body?.email === 'string' ? normalizeEmail(req.body.email) : undefined;
 	if (typeof email !== 'string' || !email.includes('@')) {
 		res.status(400).json({ error: 'a valid email is required' });
 		return;
@@ -48,7 +59,7 @@ export async function signup(req: Request, res: Response, next: NextFunction) {
 	}
 
 	try {
-		const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+		const existing = await pool.query('SELECT id FROM users WHERE lower(email) = $1', [email]);
 		if (existing.rows.length > 0) {
 			res.status(409).json({ error: 'an account with that email already exists' });
 			return;
@@ -78,7 +89,7 @@ export async function login(req: Request, res: Response, next: NextFunction) {
 	}
 
 	try {
-		const result = await pool.query<UserRow>('SELECT * FROM users WHERE email = $1', [email]);
+		const result = await pool.query<UserRow>('SELECT * FROM users WHERE lower(email) = $1', [normalizeEmail(email)]);
 		const user = result.rows[0];
 		if (!user || !(await bcrypt.compare(password, user.password_hash))) {
 			res.status(401).json({ error: 'invalid email or password' });
@@ -128,8 +139,15 @@ export async function changePassword(req: AuthedRequest, res: Response, next: Ne
 		}
 
 		const passwordHash = await bcrypt.hash(newPassword, 10);
-		await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, user.id]);
-		res.json({ message: 'password has been changed' });
+		// US-5-T-13: signs out every older session, including the one making
+		// this change, so it gets a fresh token. The time comes from this
+		// process, the same clock the token's issued-at time does.
+		await pool.query(
+			'UPDATE users SET password_hash = $1, password_changed_at = $2 WHERE id = $3',
+			[passwordHash, new Date(), user.id],
+		);
+		const token = await encryptJwe(user.id, user.email);
+		res.json({ message: 'password has been changed', token });
 	} catch (err) {
 		next(err);
 	}
@@ -169,9 +187,12 @@ export async function forgotPassword(req: Request, res: Response, next: NextFunc
 	}
 
 	try {
-		const result = await pool.query<UserRow>('SELECT * FROM users WHERE email = $1', [email]);
+		const address = normalizeEmail(email);
+		// Counted whether or not the account exists, so the limit gives nothing away.
+		const withinLimit = resetEmails.hit(address);
+		const result = await pool.query<UserRow>('SELECT * FROM users WHERE lower(email) = $1', [address]);
 		const user = result.rows[0];
-		if (user) {
+		if (user && withinLimit) {
 			const token = randomBytes(32).toString('hex');
 			// A new link replaces any earlier one for the same account.
 			await pool.query('DELETE FROM password_resets WHERE user_id = $1', [user.id]);
@@ -210,9 +231,10 @@ export async function resetPassword(req: Request, res: Response, next: NextFunct
 			`WITH used AS (
 				DELETE FROM password_resets WHERE token_hash = $1 AND expires_at > now() RETURNING user_id
 			 )
-			 UPDATE users SET password_hash = $2 FROM used WHERE users.id = used.user_id
+			 UPDATE users SET password_hash = $2, password_changed_at = $3 FROM used WHERE users.id = used.user_id
 			 RETURNING users.id`,
-			[hashResetToken(token), passwordHash],
+			// US-5-T-13: signs out every session issued before the reset.
+			[hashResetToken(token), passwordHash, new Date()],
 		);
 		if (result.rows.length === 0) {
 			res.status(400).json({ error: 'this reset link is invalid or has expired' });

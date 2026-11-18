@@ -1,7 +1,7 @@
 import cors from 'cors';
 import express from 'express';
 import { NextFunction, ErrorRequestHandler } from 'express';
-import { requireAuth } from './middleware';
+import { limitByIp, requireAuth } from './middleware';
 import {
 	getRoot,
 	login,
@@ -16,6 +16,14 @@ import {
 
 const app = express();
 
+// Cloud Run sits one proxy hop in front of the service, so req.ip should be
+// the client's address from X-Forwarded-For (used by the rate limit below).
+app.set('trust proxy', 1);
+
+// US-5-T-13: at most 5 requests per IP every 15 minutes on each reset endpoint.
+const RESET_LIMIT = 5;
+const RESET_WINDOW_MS = 15 * 60_000;
+
 app.use(cors());
 app.use(express.json());
 
@@ -26,8 +34,8 @@ app.post('/login', login);
 app.post('/logout', logout);
 app.get('/me', requireAuth, me);
 app.post('/password', requireAuth, changePassword);
-app.post('/password/forgot', forgotPassword);
-app.post('/password/reset', resetPassword);
+app.post('/password/forgot', limitByIp(RESET_LIMIT, RESET_WINDOW_MS), forgotPassword);
+app.post('/password/reset', limitByIp(RESET_LIMIT, RESET_WINDOW_MS), resetPassword);
 app.patch('/account', requireAuth, updateAccount);
 
 const errorHandler: ErrorRequestHandler = (err, _req, res, _next: NextFunction) => {
