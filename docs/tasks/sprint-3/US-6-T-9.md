@@ -6,7 +6,7 @@ assignee: Tyer Ham
 estimate_hours: 1
 ---
 
-# Practice Editor Saves Teammates Code. 
+# Score questions
 
 ## Description
 Serves US-6 (In-Game, #67). Users should be scored on the percent number of testcases passed.
