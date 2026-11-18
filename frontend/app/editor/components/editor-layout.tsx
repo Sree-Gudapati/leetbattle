@@ -9,6 +9,7 @@ import QuestionPanel from './question-panel';
 import TestCasesPanel from './test-cases-panel';
 import SubmitBar from './submit-bar';
 import ResultsPanel from './results-panel';
+import { useEditor } from '../context';
 
 interface EditorLayoutProps {
 	// Shown under the question, e.g. the team chat on the practice page.
@@ -16,6 +17,9 @@ interface EditorLayoutProps {
 }
 
 export default function EditorLayout({ belowQuestion }: EditorLayoutProps) {
+	// Someone else's workspace (see app/game/components -- WorkspaceSwitcher):
+	// nothing here can be run or submitted on their behalf.
+	const { readOnly } = useEditor();
 	return (
 		<div className="flex h-screen bg-page font-sans">
 
@@ -37,8 +41,12 @@ export default function EditorLayout({ belowQuestion }: EditorLayoutProps) {
 						<Monaco />
 					</div>
 				</div>
-				<SubmitBar />
-				<ResultsPanel />
+				{!readOnly && (
+					<>
+						<SubmitBar />
+						<ResultsPanel />
+					</>
+				)}
 				<div className="h-2/5 min-h-0 border-t border-line">
 					<TestCasesPanel />
 				</div>

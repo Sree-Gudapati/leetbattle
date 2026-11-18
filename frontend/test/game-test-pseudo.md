@@ -106,3 +106,35 @@
  //  - Sharing code should emit "game:code" with the question id and workspace
  // The practice editor should keep working outside a match
  //  - Opening /editor should still load random practice problems
+
+// ============================================================================
+// DRAFT (Claude, for review): US-6-T-7, teammates' code view. Edit / cut /
+// reword before tests are written. All socket traffic is mocked; no test
+// touches GameService.
+// ============================================================================
+
+ // Game page should show a workspace switcher above the code editor
+ //  - While playing, a "You" workspace tab and one tab per teammate should be shown above the code tabs
+ //  - The workspace switcher should never show a tab for a player on the other team
+ //  - With two teammates, only two teammate workspace tabs should be shown (three players max per team)
+ //  - The "You" workspace should be selected by default
+ //  - While banning or waiting for players, the workspace switcher should not be shown
+
+ // Viewing your own workspace should work exactly as before
+ //  - Selecting "You" after viewing a teammate should restore your own editable tabs and code
+ //  - Your own code should never be replaced by anything received from a teammate (push only)
+
+ // Viewing a teammate's workspace should be read only
+ //  - Selecting a teammate should show the question they are currently on
+ //  - Selecting a teammate should show their current tabs (e.g. "Tab 1", "Tab 2")
+ //  - The Monaco editor should not accept input while viewing a teammate's tab
+ //  - The teammate's tab strip should not show a "Create new tab" button
+ //  - The teammate's tab strip should not open a context menu (no copy/rename/remove) on right-click
+ //  - Clicking one of the teammate's other tabs should show that tab's code, still read only
+ //  - A teammate's code update (received over the socket) should update the read-only view live
+ //  - A teammate who hasn't shared any code yet should show their starter code for the question they're on
+
+ // Game socket context should expose teammates' code
+ //  - A received "game:code" event should be stored under the sending teammate's userId and questionId
+ //  - On connecting, a "game:code:snapshot" of teammates' saved workspaces should be loaded into state
+ //  - A later "game:code" event for the same teammate and question should replace, not merge with, the earlier one

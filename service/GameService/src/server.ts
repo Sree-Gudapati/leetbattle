@@ -5,7 +5,7 @@ import { authenticateToken } from './auth';
 import type { AuthenticatedUser } from './auth';
 import { pool } from './db';
 import { findGame, forgetGame, GAME_DURATION_MS, gradeSubmission, onGameCreated, serializeGame } from './service';
-import type { GamePlayerState, GameState, Grading, TeamId } from './service';
+import type { GamePlayerState, GameState, Grading, TeamId, Workspace } from './service';
 
 // How long a new game waits for its players before the clock starts anyway.
 const DEFAULT_JOIN_WAIT_MS = 5_000;
@@ -42,28 +42,22 @@ interface Submission {
 	code?: unknown;
 }
 
-// What a player sends on `game:ban`.
-// One tab of a player's editor, as the practice editor keeps it.
-interface EditorTab {
-	id: string;
-	name: string;
-	code: string;
-}
-
-// A player's editor for one question: their tabs and which one is open.
-interface Workspace {
-	tabs: EditorTab[];
-	activeTabId: string;
-}
-
 // What a player sends on `game:code`.
 interface CodeUpdate {
 	questionId?: unknown;
 	workspace?: unknown;
 }
 
-const isEditorTab = (value: unknown): value is EditorTab => {
-	const tab = value as Partial<EditorTab> | null;
+// One entry of a `game:code:snapshot`: a teammate's saved workspace for one question.
+interface WorkspaceSnapshotEntry {
+	userId: string;
+	displayName: string;
+	questionId: number;
+	workspace: Workspace;
+}
+
+const isEditorTab = (value: unknown): value is Workspace['tabs'][number] => {
+	const tab = value as Partial<Workspace['tabs'][number]> | null;
 	return typeof tab?.id === 'string' && typeof tab.name === 'string' && typeof tab.code === 'string';
 };
 
@@ -258,6 +252,21 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 		player.left = false;
 		clearTimeout(game.timers.leave.get(user.id));
 		game.timers.leave.delete(user.id);
+
+		// Hands the joining or reconnecting player their teammates' saved code,
+		// so their workspaces can be shown read only even if this player missed
+		// the live "game:code" updates. Never includes this player's own
+		// workspace or anyone on the other team.
+		const snapshot: WorkspaceSnapshotEntry[] = teamOf(game, player.team)
+			.filter((teammate) => teammate.userId !== user.id)
+			.flatMap((teammate) => [...(game.workspaces.get(teammate.userId) ?? new Map())].map(([questionId, workspace]) => ({
+				userId: teammate.userId,
+				displayName: teammate.displayName,
+				questionId,
+				workspace,
+			})));
+		socket.emit('game:code:snapshot', snapshot);
+
 		if (game.phase === 'waiting' && [...game.players.values()].every((entry) => entry.connected)) {
 			startBanning(game);
 		} else {
@@ -284,11 +293,17 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 		});
 
 		// Passes a player's editor for one question on to their own team only,
-		// so the other team can never receive it. Nothing is saved here.
+		// so the other team can never receive it. Also saves it as this
+		// player's latest workspace for that question, so a teammate who joins
+		// or reconnects later still gets it (see "game:code:snapshot" above).
 		socket.on('game:code', (update: CodeUpdate) => {
 			if (game.phase !== 'playing') return;
 			if (!game.problemPool.some((problem) => problem.questionId === update?.questionId)) return;
 			if (!isWorkspace(update.workspace)) return;
+			const questionId = update.questionId as number;
+			const playerWorkspaces = game.workspaces.get(user.id) ?? new Map<number, Workspace>();
+			playerWorkspaces.set(questionId, update.workspace);
+			game.workspaces.set(user.id, playerWorkspaces);
 			socket.to(`${gameRoom(game)}:${player.team}`).emit('game:code', {
 				userId: user.id,
 				displayName: player.displayName,

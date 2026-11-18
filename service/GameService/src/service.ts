@@ -33,6 +33,19 @@ export interface PoolProblem {
 	topics: string[];
 }
 
+// One tab of a player's editor, as the practice editor keeps it.
+export interface EditorTab {
+	id: string;
+	name: string;
+	code: string;
+}
+
+// A player's editor for one question: their tabs and which one is open.
+export interface Workspace {
+	tabs: EditorTab[];
+	activeTabId: string;
+}
+
 export interface GamePlayerState {
 	userId: string;
 	displayName: string;
@@ -59,6 +72,10 @@ export interface GameState {
 	bans: Map<string, number>; // userId -> questionId that player banned
 	banEndsAt: number | null; // Date.now() when the ban window runs out; null outside the ban phase
 	selections: Map<string, string>; // userId -> task_id currently being worked (player_selections)
+	// Every player's last-shared editor, kept so a player who joins or
+	// reconnects mid-match can be shown their teammates' workspaces read only
+	// (see "game:code:snapshot" in src/server.ts), not just live updates.
+	workspaces: Map<string, Map<number, Workspace>>; // userId -> questionId -> workspace
 	forfeitVotes: Record<TeamId, Set<string>>; // userIds on each team who chose to forfeit
 	solved: Record<TeamId, Set<string>>; // task_ids each team has had accepted
 	// The per-team submit lock (see `game:submit` in src/server.ts): whether a
@@ -225,6 +242,7 @@ export async function createGame(req: Request, res: Response, next: NextFunction
 			bans: new Map(),
 			banEndsAt: null,
 			selections: new Map(),
+			workspaces: new Map(),
 			forfeitVotes: { a: new Set(), b: new Set() },
 			solved: { a: new Set(), b: new Set() },
 			submitting: { a: false, b: false },

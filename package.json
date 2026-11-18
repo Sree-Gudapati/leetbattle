@@ -9,11 +9,13 @@
         "install-frontend": "cd frontend && npm install",
         "start": "npm run start-db && concurrently --kill-others \"npm run start-auth\" \"npm run start-code\" \"npm run start-lobby\" \"npm run start-game\" \"npm run start-frontend\"",
         "start-db": "cd service && docker compose --env-file ../.env up -d",
+        "end-db": "cd service && docker compose down",
         "start-auth": "cd service/AuthService && npm run dev",
         "start-code": "cd service/CodeService && npm run dev",
         "start-lobby": "cd service/LobbyService && npm run dev",
         "start-game": "cd service/GameService && npm run dev",
-        "start-frontend": "cd frontend && npm run dev"
+        "start-frontend": "cd frontend && npm run dev",
+        "insert-game": "cd service/GameService && npm run dev-match --"
     },
     "devDependencies": {
         "concurrently": "^9.1.0"

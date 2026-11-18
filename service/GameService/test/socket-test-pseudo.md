@@ -126,3 +126,25 @@
  //  - Code sent before play has started should not be relayed
  //  - Code for a question that isn't in the match pool should not be relayed
  //  - A malformed workspace should not be relayed
+
+// ============================================================================
+// DRAFT (Claude, for review): US-6-T-7, GameService should keep a readable
+// reference of every player's code. Edit / cut / reword before tests are
+// written.
+// ============================================================================
+
+ // GameService should save a reference to each player's shared code
+ //  - After a player sends "game:code", the game state should hold that player's workspace for that question
+ //  - Sending "game:code" again for the same question should replace the saved workspace, not add to it
+ //  - A player's workspace for a different question should be saved separately, so both remain readable
+ //  - A malformed workspace should not be saved
+ //  - Code sent before play has started should not be saved
+ //  - Code for a question that isn't in the match pool should not be saved
+
+ // GameService should hand a joining or reconnecting player their teammates' saved code
+ //  - On connecting mid-match, a player should receive a "game:code:snapshot" of every teammate's saved workspaces
+ //  - The snapshot should be keyed by teammate userId and questionId
+ //  - The snapshot should never include the connecting player's own saved workspace
+ //  - The snapshot should never include a player from the other team
+ //  - A teammate who hasn't shared any code yet should not appear in the snapshot
+ //  - Once the game ends, saved workspaces should be discarded with the rest of the game state
