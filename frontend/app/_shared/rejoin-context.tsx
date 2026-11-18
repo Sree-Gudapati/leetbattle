@@ -1,5 +1,5 @@
 'use client';
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { Suspense, createContext, useCallback, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '../login/context';
@@ -37,28 +37,13 @@ async function findActiveMatch(userId: string): Promise<RejoinMatch | null> {
 }
 
 // US-6-T-8: lives in the root layout so the game page can tell a rejoin from
-// a plain visit, but the Rejoin Match button belongs to the lobby page only.
-// The check runs each time the player opens the lobby, in the background so
-// the page never waits on it; no other page checks or shows the button.
+// a plain visit. It only holds the match; the lobby-only check and button
+// read the URL, so they sit in their own Suspense boundary (see LobbyRejoin)
+// and the rest of the app can still be prerendered.
 export function RejoinProvider({ children }: { children: ReactNode }) {
 	const { user } = useAuth();
-	const pathname = usePathname();
-	const router = useRouter();
 	const [match, setMatch] = useState<RejoinMatch | null>(null);
 	const userId = user?.id;
-	const onLobby = pathname === '/lobby';
-
-	useEffect(() => {
-		if (!userId || !onLobby) return;
-		let current = true;
-		void findActiveMatch(userId).then((found) => {
-			if (current) setMatch(found);
-		});
-		// Leaving the lobby (or a newer visit's check) replaces this one, so a slow answer can't overwrite it.
-		return () => {
-			current = false;
-		};
-	}, [userId, onLobby]);
 
 	const clear = useCallback((gameId: string) => {
 		setMatch((existing) => (existing?.gameId === gameId ? null : existing));
@@ -69,17 +54,46 @@ export function RejoinProvider({ children }: { children: ReactNode }) {
 	return (
 		<RejoinContext.Provider value={{ match: visibleMatch, clear }}>
 			{children}
-			{visibleMatch && onLobby && (
-				<nav aria-label="Active match" className="fixed right-5 bottom-5 z-50">
-					<button
-						onClick={() => router.push(visibleMatch.gameRoute)}
-						className="inline-flex h-11 items-center rounded-xl bg-ink px-[18px] font-bold text-page shadow-lg hover:opacity-85"
-					>
-						Rejoin Match
-					</button>
-				</nav>
+			{userId && (
+				<Suspense fallback={null}>
+					<LobbyRejoin userId={userId} match={visibleMatch} onFound={setMatch} />
+				</Suspense>
 			)}
 		</RejoinContext.Provider>
+	);
+}
+
+// The Rejoin Match button, on the lobby page only. The check runs each time
+// the player opens the lobby, in the background so the page never waits on it.
+// usePathname() is URL data, which Next.js only allows inside a Suspense
+// boundary when it prerenders, hence the split from RejoinProvider.
+function LobbyRejoin({ userId, match, onFound }: { userId: string; match: RejoinMatch | null; onFound: (_match: RejoinMatch | null) => void }) {
+	const pathname = usePathname();
+	const router = useRouter();
+	const onLobby = pathname === '/lobby';
+
+	useEffect(() => {
+		if (!onLobby) return;
+		let current = true;
+		void findActiveMatch(userId).then((found) => {
+			if (current) onFound(found);
+		});
+		// Leaving the lobby (or a newer visit's check) replaces this one, so a slow answer can't overwrite it.
+		return () => {
+			current = false;
+		};
+	}, [userId, onLobby, onFound]);
+
+	if (!match || !onLobby) return null;
+	return (
+		<nav aria-label="Active match" className="fixed right-5 bottom-5 z-50">
+			<button
+				onClick={() => router.push(match.gameRoute)}
+				className="inline-flex h-11 items-center rounded-xl bg-ink px-[18px] font-bold text-page shadow-lg hover:opacity-85"
+			>
+				Rejoin Match
+			</button>
+		</nav>
 	);
 }
 
