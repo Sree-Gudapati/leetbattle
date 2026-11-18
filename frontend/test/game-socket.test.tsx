@@ -11,6 +11,10 @@
 //  - Submitting should emit "game:submit" with the question id and code and resolve with the grading
 //  - A refused submission should reject with a readable message
 //  - Sharing code should emit "game:code" with the question id and workspace
+// US-6-T-7: Game socket context should expose teammates' code
+//  - A received "game:code" event should be stored under the sending teammate's userId and questionId
+//  - On connecting, a "game:code:snapshot" of teammates' saved workspaces should be loaded into state
+//  - A later "game:code" event for the same teammate and question should replace, not merge with, the earlier one
 import { useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen } from '@testing-library/react';
@@ -58,7 +62,7 @@ const WORKSPACE = { tabs: [{ id: 'tab-1', name: 'Tab 1', code: 'print(1)' }], ac
 
 // A minimal page: joins game-1 on mount and prints what the context exposes.
 function Consumer() {
-	const { connect, game, error, result, forfeit, ban, submit, shareCode } = useGameSocket();
+	const { connect, game, error, result, forfeit, ban, submit, shareCode, teammateCode } = useGameSocket();
 	const [submitted, setSubmitted] = useState('');
 	useEffect(() => {
 		connect('game-1');
@@ -75,6 +79,7 @@ function Consumer() {
 			<button onClick={() => submit(3, 'print(1)').then((grading) => setSubmitted(grading.verdict), (err: Error) => setSubmitted(err.message))}>Submit</button>
 			<span data-testid="submitted">{submitted}</span>
 			<button onClick={() => shareCode(3, WORKSPACE)}>Share</button>
+			<span data-testid="teammate-code">{JSON.stringify(teammateCode)}</span>
 		</div>
 	);
 }
@@ -183,5 +188,31 @@ describe('game socket context', () => {
 		act(() => screen.getByRole('button', { name: 'Share' }).click());
 
 		expect(fake.socket.emit).toHaveBeenCalledWith('game:code', { questionId: 3, workspace: WORKSPACE });
+	});
+
+	it('US-6-T-7 stores a received game:code event under the sending teammate\'s userId and questionId', () => {
+		renderConsumer();
+
+		act(() => fake.fire('game:code', { userId: 'u2', displayName: 'Alan', questionId: 5, workspace: WORKSPACE }));
+
+		expect(JSON.parse(screen.getByTestId('teammate-code').textContent ?? '{}')).toEqual({ u2: { 5: WORKSPACE } });
+	});
+
+	it('US-6-T-7 loads a received game:code:snapshot into teammateCode', () => {
+		renderConsumer();
+
+		act(() => fake.fire('game:code:snapshot', [{ userId: 'u2', displayName: 'Alan', questionId: 5, workspace: WORKSPACE }]));
+
+		expect(JSON.parse(screen.getByTestId('teammate-code').textContent ?? '{}')).toEqual({ u2: { 5: WORKSPACE } });
+	});
+
+	it('US-6-T-7 replaces, rather than merges with, an earlier game:code for the same teammate and question', () => {
+		const laterWorkspace = { tabs: [{ id: 'tab-1', name: 'Tab 1', code: 'print(2)' }], activeTabId: 'tab-1' };
+		renderConsumer();
+		act(() => fake.fire('game:code', { userId: 'u2', displayName: 'Alan', questionId: 5, workspace: WORKSPACE }));
+
+		act(() => fake.fire('game:code', { userId: 'u2', displayName: 'Alan', questionId: 5, workspace: laterWorkspace }));
+
+		expect(JSON.parse(screen.getByTestId('teammate-code').textContent ?? '{}')).toEqual({ u2: { 5: laterWorkspace } });
 	});
 });

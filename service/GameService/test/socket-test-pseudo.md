@@ -126,3 +126,58 @@
  //  - Code sent before play has started should not be relayed
  //  - Code for a question that isn't in the match pool should not be relayed
  //  - A malformed workspace should not be relayed
+
+// ============================================================================
+// DRAFT (Claude, for review): US-6-T-7, GameService should keep a readable
+// reference of every player's code. Edit / cut / reword before tests are
+// written.
+// ============================================================================
+
+ // GameService should save a reference to each player's shared code
+ //  - After a player sends "game:code", the game state should hold that player's workspace for that question
+ //  - Sending "game:code" again for the same question should replace the saved workspace, not add to it
+ //  - A player's workspace for a different question should be saved separately, so both remain readable
+ //  - A malformed workspace should not be saved
+ //  - Code sent before play has started should not be saved
+ //  - Code for a question that isn't in the match pool should not be saved
+
+ // GameService should hand a joining or reconnecting player their teammates' saved code
+ //  - On connecting mid-match, a player should receive a "game:code:snapshot" of every teammate's saved workspaces
+ //  - The snapshot should be keyed by teammate userId and questionId
+ //  - The snapshot should never include the connecting player's own saved workspace
+ //  - The snapshot should never include a player from the other team
+ //  - A teammate who hasn't shared any code yet should not appear in the snapshot
+ //  - Once the game ends, saved workspaces should be discarded with the rest of the game state
+
+// ============================================================================
+// DRAFT (Claude, for review): US-6-T-8, scoring submissions by percent of
+// testcases passed. Edit / cut / reword before tests are written.
+// Points by difficulty: Easy 150, Medium 300, Hard 450. A problem's points are
+// floor(testCasesPassed / testCasesTotal * pointsForItsDifficulty).
+// Resubmitting is allowed; per the earlier decision, only the best score a
+// team has reached on a problem counts toward the team's total.
+// ============================================================================
+
+ // Points should be awarded by the percent of testcases passed
+ //  - An Easy problem passing all of its cases should award 150 points
+ //  - A Medium problem passing 2 of its 3 cases should award 200 points (floor(2/3 * 300))
+ //  - A Hard problem passing 1 of its 4 cases should award 112 points (floor(1/4 * 450))
+ //  - A problem passing none of its cases should award 0 points
+
+ // Submitting should update the team's score
+ //  - A scored submission should add its points to the submitting player's team score
+ //  - The updated score should be sent to the whole game room on the next "game:state"
+ //  - Running code (not submitting) should never change the team's score
+
+ // A team should only be credited its best score on each problem
+ //  - Resubmitting a problem for fewer points than an earlier submission should not lower the team's score
+ //  - Resubmitting a problem for more points than an earlier submission should raise the team's score by only the difference
+ //  - Resubmitting a problem for the same points as an earlier submission should not change the team's score again
+
+ // Scored submissions should be saved
+ //  - A scored submission should insert a row into `submissions` with the player's userId, the task_id, the testcases passed and total, and the points it was awarded
+
+ // (unchanged by this task, already covered above: "Game should decide the winner
+ // when time runs out" compares game.scores.a/b, which this task makes real; "Game
+ // should end once a team solves every problem" still means every case passed,
+ // not total points, and is untouched)

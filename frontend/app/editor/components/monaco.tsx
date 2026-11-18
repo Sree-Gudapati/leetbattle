@@ -12,7 +12,7 @@ function applyTheme(monaco: MonacoApi) {
 }
 
 export default function Monaco() {
-	const { code, setCode } = useEditor();
+	const { code, setCode, readOnly } = useEditor();
 	const monacoRef = useRef<MonacoApi | null>(null);
 
 	// Settings changes data-scheme and data-mode on <html>; restyle the editor when it does.
@@ -37,7 +37,7 @@ export default function Monaco() {
 				applyTheme(monaco);
 			}}
 			onChange={(value) => setCode(value ?? '')}
-			options={{ minimap: { enabled: false }, fontSize: 14 }}
+			options={{ minimap: { enabled: false }, fontSize: 14, readOnly }}
 		/>
 	);
 }

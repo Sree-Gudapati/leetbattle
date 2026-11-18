@@ -1,9 +1,13 @@
 import { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
 import { pool } from './db';
+import { authenticateToken } from './auth';
 
 export const GAME_DURATION_MS = 20 * 60 * 1000;
 const CODE_SERVICE_URL = process.env.CODE_SERVICE_URL ?? 'http://localhost:4001';
+// Where clients open this service's WebSocket (US-6-T-8 hands it out so a
+// player can rejoin). Read per request so a deployment can set it at start-up.
+const gameSocketUrl = () => process.env.GAME_SOCKET_URL ?? 'http://localhost:4004';
 
 const readyPlayerSchema = z.object({
 	userId: z.uuid(),
@@ -33,6 +37,19 @@ export interface PoolProblem {
 	topics: string[];
 }
 
+// One tab of a player's editor, as the practice editor keeps it.
+export interface EditorTab {
+	id: string;
+	name: string;
+	code: string;
+}
+
+// A player's editor for one question: their tabs and which one is open.
+export interface Workspace {
+	tabs: EditorTab[];
+	activeTabId: string;
+}
+
 export interface GamePlayerState {
 	userId: string;
 	displayName: string;
@@ -59,8 +76,15 @@ export interface GameState {
 	bans: Map<string, number>; // userId -> questionId that player banned
 	banEndsAt: number | null; // Date.now() when the ban window runs out; null outside the ban phase
 	selections: Map<string, string>; // userId -> task_id currently being worked (player_selections)
+	// Every player's last-shared editor, kept so a player who joins or
+	// reconnects mid-match can be shown their teammates' workspaces read only
+	// (see "game:code:snapshot" in src/server.ts), not just live updates.
+	workspaces: Map<string, Map<number, Workspace>>; // userId -> questionId -> workspace
 	forfeitVotes: Record<TeamId, Set<string>>; // userIds on each team who chose to forfeit
 	solved: Record<TeamId, Set<string>>; // task_ids each team has had accepted
+	// The best points a team has reached on each problem (see pointsForSubmission
+	// in src/server.ts): resubmitting only raises the team's score if it beats this.
+	bestScore: Record<TeamId, Map<string, number>>; // task_id -> points
 	// The per-team submit lock (see `game:submit` in src/server.ts): whether a
 	// submission is being graded, and when the team may next submit.
 	submitting: Record<TeamId, boolean>;
@@ -225,8 +249,10 @@ export async function createGame(req: Request, res: Response, next: NextFunction
 			bans: new Map(),
 			banEndsAt: null,
 			selections: new Map(),
+			workspaces: new Map(),
 			forfeitVotes: { a: new Set(), b: new Set() },
 			solved: { a: new Set(), b: new Set() },
+			bestScore: { a: new Map(), b: new Map() },
 			submitting: { a: false, b: false },
 			cooldownUntil: { a: 0, b: 0 },
 			timers: { leave: new Map() },
@@ -242,21 +268,37 @@ export async function createGame(req: Request, res: Response, next: NextFunction
 
 // Fetches a single game's current state for the /game/[gameId] page (initial
 // load or reconnect after a dropped socket)
+// US-6-T-8: the caller's own active match, with what the client needs to
+// rejoin it. Only the logged-in player may look up their own match: the
+// Bearer token must be valid (401) and belong to the :id asked about (403).
 export async function getGame(req: Request, res: Response, next: NextFunction) {
 	const { id: userId } = req.params;
+	let callerId: string;
+	try {
+		callerId = (await authenticateToken(req.headers.authorization?.replace(/^Bearer /, ''))).id;
+	} catch {
+		return next(new HttpError(401, 'a valid login token is required'));
+	}
+	if (callerId !== userId) {
+		return next(new HttpError(403, 'you can only look up your own match'));
+	}
 	try {
 		const result = await pool.query<{ game_id: string }>(
 			`SELECT game.game_id FROM game
 			 JOIN players ON players.game_id = game.game_id
 			 WHERE players.user_id = $1 AND game.ended_at IS NULL
-			 ORDER BY game.started_at ASC
-			 LIMIT 1`,
+			 ORDER BY game.started_at DESC`,
 			[userId],
 		);
-		if (result.rows.length === 0) {
+		// A restart (e.g. a deploy) forgets the matches this service was running
+		// but leaves their rows without an ended_at, and a socket can't join
+		// those. Only a match still running here can be rejoined.
+		const live = result.rows.find((row) => findGame(row.game_id));
+		if (!live) {
 			return next(new HttpError(404, 'no active game for that player'));
 		}
-		res.json({ gameId: result.rows[0].game_id });
+		const gameId = live.game_id;
+		res.json({ gameId, socketUrl: gameSocketUrl(), gameRoute: `/game/${gameId}` });
 	} catch (err) {
 		next(err);
 	}

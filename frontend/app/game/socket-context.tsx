@@ -4,6 +4,7 @@ import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, u
 import { io } from 'socket.io-client';
 import type { Socket } from 'socket.io-client';
 import { getToken } from '../login/controller';
+import { useRejoin } from '../_shared/rejoin-context';
 import { useAuth } from '../login/context';
 import type { TeamId } from '../lobby/socket-context';
 import type { SubmitResult } from '../editor/controller';
@@ -61,6 +62,17 @@ export interface GameError {
 	message: string;
 }
 
+// A teammate's saved workspaces, by questionId, as GameService relays and
+// snapshots them on "game:code" / "game:code:snapshot".
+export type TeammateCode = Record<string, Record<number, EditorWorkspace>>;
+
+// One entry of a "game:code" event or a "game:code:snapshot" array.
+interface CodeEntry {
+	userId: string;
+	questionId: number;
+	workspace: EditorWorkspace;
+}
+
 interface GameSocketContextValue {
 	socket: Socket | null;
 	connected: boolean;
@@ -77,6 +89,8 @@ interface GameSocketContextValue {
 	submit: (_questionId: number, _code: string) => Promise<SubmitResult>;
 	// Sends the player's editor for one question to their own team.
 	shareCode: (_questionId: number, _workspace: EditorWorkspace) => void;
+	// Teammates' saved workspaces, by userId then questionId, read only.
+	teammateCode: TeammateCode;
 	clearError: () => void;
 }
 
@@ -101,14 +115,35 @@ const REFUSALS: Record<string, string> = {
 	'not-in-game': 'You are not a player in this match.',
 };
 
+// US-6-T-8: shown instead of "not a player" when a match the player was
+// rejoining ended before they got back in.
+const MATCH_UNAVAILABLE = 'This match is no longer available.';
+
 export function GameSocketProvider({ children }: { children: ReactNode }) {
 	const { user } = useAuth();
+	// The match the Rejoin Match button offered, read when a connection is
+	// refused; a ref so connect() doesn't change every time the check runs.
+	const rejoin = useRejoin();
+	const rejoinRef = useRef(rejoin);
+	useEffect(() => {
+		rejoinRef.current = rejoin;
+	}, [rejoin]);
 	const [socket, setSocket] = useState<Socket | null>(null);
 	const [connected, setConnected] = useState(false);
 	const [game, setGame] = useState<GameState | null>(null);
 	const [result, setResult] = useState<GameResult | null>(null);
 	const [error, setError] = useState<GameError | null>(null);
+	const [teammateCode, setTeammateCode] = useState<TeammateCode>({});
 	const socketRef = useRef<{ gameId: string; socket: Socket } | null>(null);
+
+	// Saves one teammate's workspace for one question, replacing (not merging
+	// with) whatever was saved for that same teammate and question before.
+	const saveTeammateCode = useCallback(({ userId, questionId, workspace }: CodeEntry) => {
+		setTeammateCode((current) => ({
+			...current,
+			[userId]: { ...current[userId], [questionId]: workspace },
+		}));
+	}, []);
 
 	// Opens the socket for one match. GameService checks the login token and
 	// that this user is on the match's roster before letting the socket in.
@@ -129,7 +164,18 @@ export function GameSocketProvider({ children }: { children: ReactNode }) {
 			setError(null);
 		});
 		nextSocket.on('game:ended', (ended: GameResult) => setResult(ended));
+		nextSocket.on('game:code', (entry: CodeEntry) => saveTeammateCode(entry));
+		nextSocket.on('game:code:snapshot', (entries: CodeEntry[]) => {
+			for (const entry of entries) saveTeammateCode(entry);
+		});
 		nextSocket.on('connect_error', (reason: Error) => {
+			// GameService forgets a match once it ends, so rejoining one that ended
+			// in the meantime is refused as not-in-game.
+			if (reason.message === 'not-in-game' && rejoinRef.current?.match?.gameId === gameId) {
+				rejoinRef.current.clear(gameId);
+				setError({ code: 'match-unavailable', message: MATCH_UNAVAILABLE });
+				return;
+			}
 			const refusal = REFUSALS[reason.message];
 			setError(refusal
 				? { code: reason.message, message: refusal }
@@ -145,9 +191,10 @@ export function GameSocketProvider({ children }: { children: ReactNode }) {
 		setConnected(false);
 		setGame(null);
 		setResult(null);
+		setTeammateCode({});
 		nextSocket.connect();
 		return nextSocket;
-	}, [user]);
+	}, [saveTeammateCode, user]);
 
 	// The provider lives on the game page, so leaving the page closes the socket.
 	useEffect(() => () => {
@@ -177,7 +224,7 @@ export function GameSocketProvider({ children }: { children: ReactNode }) {
 
 	const clearError = useCallback(() => setError(null), []);
 	return (
-		<GameSocketContext.Provider value={{ socket, connected, game, result, error, connect, forfeit, ban, submit, shareCode, clearError }}>
+		<GameSocketContext.Provider value={{ socket, connected, game, result, error, connect, forfeit, ban, submit, shareCode, teammateCode, clearError }}>
 			{children}
 		</GameSocketContext.Provider>
 	);
