@@ -380,4 +380,14 @@ describe('team chat rate limiting', () => {
 		const answer = await sockets[0].timeout(2_000).emitWithAck('chat:send', { text: 'second' });
 		expect(answer).toEqual({ error: 'Whoa, slow down!' });
 	});
+
+	it('US-3-T-4 does not save a rate-limited chat:send to team_messages', async () => {
+		const teammate = nextEvent<ChatMessage>(sockets[1], 'chat:message');
+		sockets[0].emit('chat:send', { text: 'first' });
+		await teammate;
+		// The "Whoa, slow down!" answer means the server is done with this message.
+		await sockets[0].timeout(2_000).emitWithAck('chat:send', { text: 'second' });
+		const { rows } = await pool.query<TeamMessageRow>('SELECT * FROM team_messages WHERE game_id = $1', [gameId]);
+		expect(rows.map((row) => row.text)).toEqual(['first']);
+	});
 });
