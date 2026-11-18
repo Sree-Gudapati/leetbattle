@@ -444,4 +444,11 @@ describe('old team chat cleanup', () => {
 		const { rows } = await pool.query('SELECT id FROM team_messages WHERE id = $1', [id]);
 		expect(rows).toEqual([]);
 	});
+
+	it('US-3-T-4 keeps messages newer than 10 days when a game ends', async () => {
+		const id = await saveMessageFromDaysAgo(9);
+		await endGameByForfeit();
+		const { rows } = await pool.query('SELECT id FROM team_messages WHERE id = $1', [id]);
+		expect(rows).toEqual([{ id }]);
+	});
 });
