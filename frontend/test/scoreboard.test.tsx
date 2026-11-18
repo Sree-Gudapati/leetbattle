@@ -4,7 +4,7 @@
 // No backend is touched: `useMatch` is replaced with a fake that serves mocked
 // scores, timer and submissions; the timer test runs the real provider under
 // fake timers; the match screen test stubs fetch and the auth context.
-import { act, cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeUser, jsonResponse, stubFetch, threeProblems } from './helpers';
 
@@ -57,18 +57,6 @@ function renderScoreboard(match: {
 	return render(<Scoreboard />);
 }
 
-// Builds n submissions, newest first: the first one is "Player 1".
-function manySubmissions(n: number): TestSubmission[] {
-	return Array.from({ length: n }, (_, i) => ({
-		id: `m${i + 1}`,
-		displayName: `Player ${i + 1}`,
-		team: 'a' as const,
-		question: 1,
-		accepted: false,
-		points: 0,
-	}));
-}
-
 beforeEach(() => {
 	vi.unstubAllGlobals();
 	matchMocks.useMatch.mockReset();
@@ -111,11 +99,6 @@ describe('scoreboard team scores', () => {
 });
 
 describe('scoreboard match timer', () => {
-	it('US4-Task4 labels the timer "Time left"', () => {
-		renderScoreboard();
-		expect(screen.getByText('Time left')).toBeTruthy();
-	});
-
 	it('US4-Task4 shows 12:34 when 754 seconds are left', () => {
 		renderScoreboard({ secondsLeft: 754 });
 		expect(screen.getByText('12:34')).toBeTruthy();
@@ -153,41 +136,34 @@ describe('scoreboard match timer', () => {
 	});
 });
 
-describe('scoreboard recent submissions', () => {
-	it('US4-Task4 shows the name of each player who submitted when there are two submissions', () => {
+// US5-Task17 (#133). Pseudocode: test/scoreboard-test-pseudo.md
+// The scoreboard is one compact line: the two scores and the time left. The
+// recent submissions list and the visible "Time left" label are gone (their
+// US4-Task4 tests went with them).
+describe('compact scoreboard', () => {
+	it('US5-Task17 shows Team 1\'s score, the time left and Team 2\'s score, in that order', () => {
+		renderScoreboard({ scores: { a: 120, b: 80 }, secondsLeft: 674 });
+		expect(screen.getByRole('region', { name: 'Scoreboard' }).textContent).toBe('Team 112011:14Team 280');
+	});
+
+	it('US5-Task17 does not show the recent submissions list', () => {
 		renderScoreboard({ submissions: [ADA_ACCEPTED, ALAN_FAILED] });
-		const list = screen.getByRole('list');
-		expect(within(list).getAllByText(/^(Ada|Alan)$/).map((el) => el.textContent)).toEqual(['Ada', 'Alan']);
+		expect(screen.queryByRole('list')).toBeNull();
 	});
 
-	it('US4-Task4 shows a submission\'s question as "Question 3"', () => {
-		renderScoreboard({ submissions: [ADA_ACCEPTED] });
-		expect(screen.getByText('Question 3')).toBeTruthy();
-	});
-
-	it('US4-Task4 shows "Accepted" for an accepted submission', () => {
-		renderScoreboard({ submissions: [ADA_ACCEPTED] });
-		expect(screen.getByText('Accepted')).toBeTruthy();
-	});
-
-	it('US4-Task4 shows "+50" for an accepted submission worth 50 points', () => {
-		renderScoreboard({ submissions: [ADA_ACCEPTED] });
-		expect(screen.getByText('+50')).toBeTruthy();
-	});
-
-	it('US4-Task4 shows "Wrong answer" for a failed submission', () => {
-		renderScoreboard({ submissions: [ALAN_FAILED] });
-		expect(screen.getByText('Wrong answer')).toBeTruthy();
-	});
-
-	it('US4-Task4 shows "No submissions yet" when there are no submissions', () => {
+	it('US5-Task17 does not show "No submissions yet"', () => {
 		renderScoreboard({ submissions: [] });
-		expect(screen.getByText('No submissions yet')).toBeTruthy();
+		expect(screen.queryByText('No submissions yet')).toBeNull();
 	});
 
-	it('US4-Task4 shows only the five most recent submissions when there are seven', () => {
-		renderScoreboard({ submissions: manySubmissions(7) });
-		expect(within(screen.getByRole('list')).getAllByRole('listitem').length).toBe(5);
+	it('US5-Task17 does not show a "Time left" label', () => {
+		renderScoreboard();
+		expect(screen.queryByText('Time left')).toBeNull();
+	});
+
+	it('US5-Task17 still labels the timer "Time left" for screen readers', () => {
+		renderScoreboard({ secondsLeft: 674 });
+		expect(screen.getByText('11:14').closest('[aria-label]')?.getAttribute('aria-label')).toBe('Time left');
 	});
 });
 
