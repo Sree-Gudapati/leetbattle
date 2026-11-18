@@ -390,4 +390,17 @@ describe('team chat rate limiting', () => {
 		const { rows } = await pool.query<TeamMessageRow>('SELECT * FROM team_messages WHERE game_id = $1', [gameId]);
 		expect(rows.map((row) => row.text)).toEqual(['first']);
 	});
+
+	it('US-3-T-4 sends no chat:message for a rate-limited chat:send', async () => {
+		// Record every message the teammate receives.
+		const received: string[] = [];
+		sockets[1].on('chat:message', (message: ChatMessage) => received.push(message.text));
+		const first = nextEvent<ChatMessage>(sockets[1], 'chat:message');
+		sockets[0].emit('chat:send', { text: 'first' });
+		await first;
+		await sockets[0].timeout(2_000).emitWithAck('chat:send', { text: 'second' });
+		// Give a (wrongly) accepted message time to be saved and sent.
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(received).toEqual(['first']);
+	});
 });
