@@ -10,7 +10,7 @@ interface ContextMenuState {
 }
 
 export default function CodeTabs() {
-	const { tabs, activeTabId, selectTab, createTab, copyTab, renameTab, removeTab } = useEditor();
+	const { tabs, activeTabId, selectTab, createTab, copyTab, renameTab, removeTab, readOnly } = useEditor();
 	const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 	const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
 	const [nameDraft, setNameDraft] = useState('');
@@ -95,6 +95,7 @@ export default function CodeTabs() {
 									setContextMenu(null);
 								}}
 								onContextMenu={(event) => {
+									if (readOnly) return;
 									event.preventDefault();
 									setContextMenu({ tabId: tab.id, x: event.clientX, y: event.clientY });
 								}}
@@ -109,17 +110,19 @@ export default function CodeTabs() {
 						)}
 					</div>
 				))}
-				<button
-					type="button"
-					aria-label="Create new tab"
-					onClick={() => {
-						createTab();
-						setContextMenu(null);
-					}}
-					className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-lg leading-none text-muted hover:bg-raised hover:text-ink"
-				>
-					+
-				</button>
+				{!readOnly && (
+					<button
+						type="button"
+						aria-label="Create new tab"
+						onClick={() => {
+							createTab();
+							setContextMenu(null);
+						}}
+						className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-lg leading-none text-muted hover:bg-raised hover:text-ink"
+					>
+						+
+					</button>
+				)}
 			</div>
 			{contextMenu && (
 				<div

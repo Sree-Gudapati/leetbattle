@@ -10,7 +10,8 @@
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "vitest run --coverage"
+    "test": "vitest run --coverage",
+    "dev-match": "ts-node scripts/dev-match.ts"
   },
   "dependencies": {
     "cors": "^2.8.6",

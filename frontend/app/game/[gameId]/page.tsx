@@ -9,10 +9,12 @@ import HomeTopBar from '../../_home/components/topbar';
 import PageLoader from '../../_shared/page-loader';
 import type { TeamId } from '../../lobby/socket-context';
 import { EditorProvider } from '../../editor/context';
+import type { EditorWorkspace } from '../../editor/context';
 import EditorLayout from '../../editor/components/editor-layout';
 import BanScreen from '../components/ban-screen';
+import WorkspaceSwitcher from '../components/workspace-switcher';
 import { GameSocketProvider, useGameSocket } from '../socket-context';
-import type { GamePlayer, GameResult } from '../socket-context';
+import type { GamePlayer, GameResult, TeammateCode } from '../socket-context';
 
 const TEAMS: { id: TeamId; name: string; nameColor: string }[] = [
 	{ id: 'a', name: 'Team 1', nameColor: 'text-primary' },
@@ -122,13 +124,53 @@ function ResultScreen({ result }: { result: GameResult }) {
 	);
 }
 
+// The practice editor on the problems left after the bans, plus a switcher
+// above it so the player can look at their teammates' workspaces without
+// losing their own editable tabs and code. A teammate's workspace reuses the
+// exact same editor UI (EditorLayout, with its QuestionPanel / CodeTabs /
+// Monaco), just driven by a second, read-only EditorProvider fed their shared
+// code instead of this player's own.
+function MatchEditor({ questionIds, submit, shareCode, teammates, teammateCode }: {
+	questionIds: number[];
+	submit: (_questionId: number, _code: string) => Promise<import('../../editor/controller').SubmitResult>;
+	shareCode: (_questionId: number, _workspace: EditorWorkspace) => void;
+	teammates: GamePlayer[];
+	teammateCode: TeammateCode;
+}) {
+	const [viewedUserId, setViewedUserId] = useState<string | null>(null);
+	const viewedTeammate = teammates.find((teammate) => teammate.userId === viewedUserId) ?? null;
+
+	// Always mounted, even while viewing a teammate, so this player's own
+	// tabs and code never reset just from switching the workspace view away
+	// and back (see context.tsx -- EditorProvider owns that state, not EditorLayout).
+	return (
+		<EditorProvider questionIds={questionIds} submit={submit} shareCode={shareCode}>
+			<WorkspaceSwitcher teammates={teammates} viewedUserId={viewedUserId} onSelect={setViewedUserId} />
+			{viewedTeammate ? (
+				<div key={viewedTeammate.userId}>
+					<p className="border-b border-line bg-surface px-4 py-2 text-xs font-medium text-muted">
+						Viewing {viewedTeammate.displayName}&apos;s workspace (read only)
+					</p>
+					<EditorProvider questionIds={questionIds} readOnly externalWorkspaces={teammateCode[viewedTeammate.userId] ?? {}}>
+						<EditorLayout />
+					</EditorProvider>
+				</div>
+			) : (
+				<EditorLayout />
+			)}
+		</EditorProvider>
+	);
+}
+
 function GameContent() {
 	const { gameId } = useParams<{ gameId: string }>();
 	const { user } = useAuth();
-	const { connected, game, result, error, connect, forfeit, ban, submit, shareCode } = useGameSocket();
+	const { connected, game, result, error, connect, forfeit, ban, submit, shareCode, teammateCode } = useGameSocket();
 	const joined = connected && game !== null;
 	const playing = joined && game.phase === 'playing' && !result;
 	const banning = joined && game.phase === 'banning' && !result;
+	const myTeam = game?.players.find((entry) => entry.userId === user?.id)?.team;
+	const teammates = game?.players.filter((entry) => entry.team === myTeam && entry.userId !== user?.id) ?? [];
 
 	useEffect(() => {
 		connect(gameId);
@@ -186,9 +228,13 @@ function GameContent() {
 							    player has their own editor; their code only goes to their team. */}
 							{playing && (
 								<div className="overflow-hidden rounded-xl border border-line">
-									<EditorProvider questionIds={game.problemPool.map((problem) => problem.questionId)} submit={submit} shareCode={shareCode}>
-										<EditorLayout />
-									</EditorProvider>
+									<MatchEditor
+										questionIds={game.problemPool.map((problem) => problem.questionId)}
+										submit={submit}
+										shareCode={shareCode}
+										teammates={teammates}
+										teammateCode={teammateCode}
+									/>
 								</div>
 							)}
 						</>

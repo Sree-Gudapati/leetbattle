@@ -986,3 +986,115 @@ describe('relaying code to teammates', () => {
 		expect(teammate).toEqual([]);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// US-6-T-7: GameService should keep a readable reference of every player's
+// shared code and hand a joining or reconnecting player a "game:code:snapshot"
+// of their teammates' saved workspaces, so the practice editor can show a
+// teammate's workspace read only even if the viewer missed the live updates
+// (see src/server.ts, "game:code:snapshot").
+// ---------------------------------------------------------------------------
+
+// A second workspace, so tests can tell which of two shares was saved last.
+const WORKSPACE_2 = { tabs: [{ id: 'tab-1', name: 'Tab 1', code: 'def solve():\n    return 2' }], activeTabId: 'tab-1' };
+
+// One entry of a `game:code:snapshot`: a teammate's saved workspace for one question.
+interface SnapshotEntry {
+	userId: string;
+	displayName: string;
+	questionId: number;
+	workspace: typeof WORKSPACE;
+}
+
+// Disconnects `socket` and opens a fresh connection for `userId`, resolving with
+// the new socket and the `game:code:snapshot` GameService sends on the way in.
+// The snapshot listener has to be registered before connecting: GameService
+// sends it immediately, so adding the listener after connect() could miss it.
+async function reconnect(socket: Socket, userId: string, gameIdToJoin: string): Promise<{ socket: Socket; snapshot: SnapshotEntry[] }> {
+	socket.disconnect();
+	const rejoined = openSocket({ token: await tokenFor(userId), gameId: gameIdToJoin });
+	const snapshot = nextEvent<SnapshotEntry[]>(rejoined, 'game:code:snapshot');
+	const state = nextState(rejoined);
+	rejoined.connect();
+	await state;
+	return { socket: rejoined, snapshot: await snapshot };
+}
+
+describe('saving teammates\' code for players who join later', () => {
+	it('gives a reconnecting player the workspace a teammate shared earlier', async () => {
+		const { game, sockets, pool } = await playingGame(2, 2);
+		const relayed = nextEvent<CodePayload>(sockets[1], 'game:code');
+		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE });
+		await relayed;
+
+		const { snapshot } = await reconnect(sockets[1], game.players[1].userId, game.gameId);
+
+		expect(snapshot).toEqual([
+			{ userId: game.players[0].userId, displayName: game.players[0].displayName, questionId: pool[0].questionId, workspace: WORKSPACE },
+		]);
+	});
+
+	it('replaces a player\'s saved workspace instead of keeping both when they share the same question again', async () => {
+		const { game, sockets, pool } = await playingGame(2, 2);
+		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE });
+		await nextEvent(sockets[1], 'game:code');
+		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE_2 });
+		await nextEvent(sockets[1], 'game:code');
+
+		const { snapshot } = await reconnect(sockets[1], game.players[1].userId, game.gameId);
+
+		expect(snapshot).toEqual([
+			{ userId: game.players[0].userId, displayName: game.players[0].displayName, questionId: pool[0].questionId, workspace: WORKSPACE_2 },
+		]);
+	});
+
+	it('saves a player\'s workspace for each question separately', async () => {
+		const { game, sockets, pool } = await playingGame(2, 2);
+		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE });
+		await nextEvent(sockets[1], 'game:code');
+		sockets[0].emit('game:code', { questionId: pool[1].questionId, workspace: WORKSPACE_2 });
+		await nextEvent(sockets[1], 'game:code');
+
+		const { snapshot } = await reconnect(sockets[1], game.players[1].userId, game.gameId);
+
+		expect(snapshot.map((entry) => entry.questionId).sort()).toEqual([pool[0].questionId, pool[1].questionId].sort());
+	});
+
+	it('never includes the reconnecting player\'s own saved workspace', async () => {
+		const { game, sockets, pool } = await playingGame(2, 2);
+		sockets[1].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE });
+		await nextEvent(sockets[0], 'game:code');
+
+		const { snapshot } = await reconnect(sockets[1], game.players[1].userId, game.gameId);
+
+		expect(snapshot).toEqual([]);
+	});
+
+	it('never includes a player from the other team', async () => {
+		const { game, sockets, pool } = await playingGame(2, 2);
+		sockets[2].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE });
+		await pause(RELAY_WAIT_MS);
+
+		const { snapshot } = await reconnect(sockets[1], game.players[1].userId, game.gameId);
+
+		expect(snapshot).toEqual([]);
+	});
+
+	it('does not save a malformed workspace', async () => {
+		const { game, sockets, pool } = await playingGame(2, 2);
+		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: { tabs: 'not a list' } });
+		await pause(RELAY_WAIT_MS);
+
+		const { snapshot } = await reconnect(sockets[1], game.players[1].userId, game.gameId);
+
+		expect(snapshot).toEqual([]);
+	});
+
+	it('does not include a teammate who hasn\'t shared any code', async () => {
+		const { game, sockets } = await playingGame(2, 2);
+
+		const { snapshot } = await reconnect(sockets[1], game.players[1].userId, game.gameId);
+
+		expect(snapshot).toEqual([]);
+	});
+});
