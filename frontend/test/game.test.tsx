@@ -64,6 +64,29 @@
 //  - While playing, the match page should display a "Team chat" panel
 //  - Sending a comment on the match page should emit "chat:send" on the game socket
 //  (CodeService's fetch and Monaco are mocked; no test touches a backend service)
+// US-6-T-8: Game page should show the live team score
+//  - The team score shown in the header should match the game state's scores
+//  - A new game state with an updated score should update what's shown, without needing to submit again
+// US-6-T-7: Game page should show a workspace switcher above the code editor
+//  - While playing, a "You" workspace tab and one tab per teammate should be shown above the code tabs
+//  - The workspace switcher should never show a tab for a player on the other team
+//  - The "You" workspace should be selected by default
+//  - While banning or waiting for players, the workspace switcher should not be shown
+// Viewing your own workspace should work exactly as before
+//  - Selecting "You" after viewing a teammate should restore your own editable tabs and code
+//  - Your own code should never be replaced by anything received from a teammate (push only)
+// Viewing a teammate's workspace should be read only
+//  - Selecting a teammate should show the question they are currently on
+//  - Selecting a teammate should show their current tabs (e.g. "Tab 1", "Tab 2")
+//  - The Monaco editor should not accept input while viewing a teammate's tab
+//  - The teammate's tab strip should not show a "Create new tab" button
+//  - The teammate's tab strip should not open a context menu on right-click
+//  - Clicking one of the teammate's other tabs should show that tab's code, still read only
+//  - A teammate's code update should update the read-only view live
+//  - A teammate who hasn't shared any code yet should show their starter code for the question they're on
+//  (extends the approved US-6-T-7 draft: a teammate's workspace also has its own question switcher,
+//  independent of your own, so you can look at their other match questions too)
+//  - Switching the teammate's own question switcher should show that question's code for the teammate
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -85,9 +108,16 @@ const gameMocks = vi.hoisted(() => ({
 
 // Monaco needs a real browser; swap it for a textarea with the same contract
 // (controlled `value`, `onChange(value)`), as the practice editor tests do.
+// A teammate's read-only view passes options.readOnly, which the real Monaco
+// would honor; the textarea mirrors that with its own readOnly attribute.
 vi.mock('@monaco-editor/react', () => ({
-	default: ({ value, onChange }: { value: string; onChange: (_v: string) => void }) => (
-		<textarea data-testid="monaco" value={value} onChange={(e) => onChange(e.target.value)} />
+	default: ({ value, onChange, options }: { value: string; onChange?: (_v: string) => void; options?: { readOnly?: boolean } }) => (
+		<textarea
+			data-testid="monaco"
+			value={value}
+			readOnly={options?.readOnly}
+			onChange={(e) => onChange?.(e.target.value)}
+		/>
 	),
 }));
 vi.mock('socket.io-client', () => ({ io: (...args: unknown[]) => gameMocks.io(...args) }));
@@ -166,13 +196,15 @@ function configureGame(context: Record<string, unknown> = {}) {
 		ban: gameMocks.ban,
 		submit: gameMocks.submit,
 		shareCode: gameMocks.shareCode,
+		teammateCode: {},
 		...context,
 	});
 }
 
-// The page once the socket is up and the server has sent the match.
-function configureConnectedGame(overrides: Record<string, unknown> = {}) {
-	configureGame({ socket: { connected: true, emit: vi.fn(), on: vi.fn(), off: vi.fn() }, connected: true, game: gameState(overrides) });
+// The page once the socket is up and the server has sent the match. `teammateCode`
+// goes to the context directly (it isn't part of the `game:state` payload).
+function configureConnectedGame(overrides: Record<string, unknown> = {}, teammateCode: Record<string, unknown> = {}) {
+	configureGame({ socket: { connected: true, emit: vi.fn(), on: vi.fn(), off: vi.fn() }, connected: true, game: gameState(overrides), teammateCode });
 }
 
 // Matches the NEXT_PUBLIC_CODE_URL fallback in app/editor/controller.tsx.
@@ -237,7 +269,10 @@ describe('game page match view', () => {
 		configureConnectedGame();
 		render(<GamePage />);
 
-		const shown = roster.filter((entry) => screen.queryByText(entry.displayName) !== null);
+		// Scoped to the rosters: the workspace switcher also shows teammates'
+		// display names (see "game page workspace switcher" below).
+		const rosters = [screen.getByRole('list', { name: 'Team 1 players' }), screen.getByRole('list', { name: 'Team 2 players' })];
+		const shown = roster.filter((entry) => rosters.some((list) => within(list).queryByText(entry.displayName) !== null));
 		expect(shown).toHaveLength(6);
 	});
 
@@ -262,6 +297,23 @@ describe('game page match view', () => {
 		render(<GamePage />);
 
 		expect(screen.getByText('20:00')).toBeTruthy();
+	});
+
+	it('US-6-T-8 shows the team score from the game state', () => {
+		configureConnectedGame({ scores: { a: 120, b: 80 } });
+		render(<GamePage />);
+
+		expect(screen.getByText('120').closest('span.font-mono')?.textContent).toBe('120 – 80');
+	});
+
+	it('US-6-T-8 updates the shown score when a new game state arrives', () => {
+		configureConnectedGame({ scores: { a: 0, b: 0 } });
+		const { rerender } = render(<GamePage />);
+		configureConnectedGame({ scores: { a: 150, b: 0 } });
+
+		rerender(<GamePage />);
+
+		expect(screen.getByText('150')).toBeTruthy();
 	});
 });
 
@@ -627,6 +679,163 @@ describe('game page editor after the bans', () => {
 
 		// Code only leaves through the game (team-only); the lobby socket would reach both teams.
 		expect(gameMocks.io).not.toHaveBeenCalled();
+	});
+});
+
+// A teammate's workspace for one question: their tabs and which one is open,
+// as GameService relays and snapshots it on "game:code" / "game:code:snapshot".
+function workspace(code: string, tabs = [{ id: 'tab-1', name: 'Tab 1', code }]) {
+	return { tabs, activeTabId: tabs[0].id };
+}
+
+describe('game page workspace switcher', () => {
+	async function renderPlayingGame(teammateCode: Record<string, unknown> = {}) {
+		configureConnectedGame({}, teammateCode);
+		render(<GamePage />);
+		await screen.findByRole('heading', { name: /1\. Problem Number 1/ });
+	}
+
+	it('US-6-T-7 shows a "You" tab and one tab per teammate while playing', async () => {
+		await renderPlayingGame();
+
+		const switcher = screen.getByRole('tablist', { name: 'Workspace' });
+		expect(within(switcher).getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['You', 'Grace', 'Katherine']);
+	});
+
+	it('US-6-T-7 never shows a workspace tab for a player on the other team', async () => {
+		await renderPlayingGame();
+
+		expect(screen.queryByRole('tab', { name: 'Alan' })).toBeNull();
+	});
+
+	it('US-6-T-7 selects "You" by default', async () => {
+		await renderPlayingGame();
+
+		expect(screen.getByRole('tab', { name: 'You' }).getAttribute('aria-selected')).toBe('true');
+	});
+
+	it('US-6-T-7 does not show the workspace switcher while banning', () => {
+		const banPool = problemPool.map((entry) => ({ ...entry, topics: ['Array'], bannedBy: null }));
+		configureConnectedGame({ phase: 'banning', banSecondsRemaining: 25, problemPool: banPool });
+		render(<GamePage />);
+
+		expect(screen.queryByRole('tablist', { name: 'Workspace' })).toBeNull();
+	});
+
+	it('US-6-T-7 does not show the workspace switcher while waiting for players', () => {
+		configureConnectedGame({ phase: 'waiting' });
+		render(<GamePage />);
+
+		expect(screen.queryByRole('tablist', { name: 'Workspace' })).toBeNull();
+	});
+});
+
+describe('game page teammate workspace view', () => {
+	async function renderPlayingGame(teammateCode: Record<string, unknown> = {}) {
+		configureConnectedGame({}, teammateCode);
+		render(<GamePage />);
+		await screen.findByRole('heading', { name: /1\. Problem Number 1/ });
+	}
+
+	it('US-6-T-7 restores your own editable tabs and code after switching back from a teammate', async () => {
+		await renderPlayingGame({ u2: { 2: workspace('teammate code') } });
+		fireEvent.change(screen.getByTestId('monaco'), { target: { value: 'my own code' } });
+		await userEvent.click(screen.getByRole('tab', { name: 'Grace' }));
+
+		await userEvent.click(screen.getByRole('tab', { name: 'You' }));
+
+		expect((screen.getByTestId('monaco') as HTMLTextAreaElement).value).toBe('my own code');
+	});
+
+	it('US-6-T-7 never replaces your own code with a teammate\'s shared code for the same question', async () => {
+		await renderPlayingGame({ u2: { 1: workspace('teammate code for question 1') } });
+
+		expect((screen.getByTestId('monaco') as HTMLTextAreaElement).value).not.toBe('teammate code for question 1');
+	});
+
+	it('US-6-T-7 shows the question a teammate is currently on', async () => {
+		await renderPlayingGame({ u2: { 2: workspace('teammate code') } });
+
+		await userEvent.click(screen.getByRole('tab', { name: 'Grace' }));
+
+		expect(await screen.findByRole('heading', { name: /2\. Problem Number 2/ })).toBeTruthy();
+	});
+
+	it('US-6-T-7 shows a teammate\'s current tabs', async () => {
+		await renderPlayingGame({
+			u2: { 2: workspace('', [{ id: 'tab-1', name: 'Tab 1', code: 'a' }, { id: 'tab-2', name: 'Tab 2', code: 'b' }]) },
+		});
+
+		await userEvent.click(screen.getByRole('tab', { name: 'Grace' }));
+
+		expect(screen.getAllByRole('tab', { name: /^Tab \d$/ }).map((tab) => tab.textContent)).toEqual(['Tab 1', 'Tab 2']);
+	});
+
+	it('US-6-T-7 does not accept input in a teammate\'s editor', async () => {
+		await renderPlayingGame({ u2: { 2: workspace('teammate code') } });
+
+		await userEvent.click(screen.getByRole('tab', { name: 'Grace' }));
+
+		expect((screen.getByTestId('monaco') as HTMLTextAreaElement).readOnly).toBe(true);
+	});
+
+	it('US-6-T-7 does not show a "Create new tab" button for a teammate', async () => {
+		await renderPlayingGame({ u2: { 2: workspace('teammate code') } });
+
+		await userEvent.click(screen.getByRole('tab', { name: 'Grace' }));
+
+		expect(screen.queryByRole('button', { name: 'Create new tab' })).toBeNull();
+	});
+
+	it('US-6-T-7 does not open a context menu on right-click in a teammate\'s tab strip', async () => {
+		await renderPlayingGame({ u2: { 2: workspace('teammate code') } });
+		await userEvent.click(screen.getByRole('tab', { name: 'Grace' }));
+
+		fireEvent.contextMenu(screen.getByRole('tab', { name: 'Tab 1' }));
+
+		expect(screen.queryByRole('menu')).toBeNull();
+	});
+
+	it('US-6-T-7 shows a teammate\'s other tab when clicked, still read only', async () => {
+		await renderPlayingGame({
+			u2: { 2: workspace('', [{ id: 'tab-1', name: 'Tab 1', code: 'first tab code' }, { id: 'tab-2', name: 'Tab 2', code: 'second tab code' }]) },
+		});
+		await userEvent.click(screen.getByRole('tab', { name: 'Grace' }));
+
+		await userEvent.click(screen.getByRole('tab', { name: 'Tab 2' }));
+
+		expect((screen.getByTestId('monaco') as HTMLTextAreaElement).value).toBe('second tab code');
+	});
+
+	it('US-6-T-7 updates the read-only view live when the teammate shares new code', async () => {
+		configureConnectedGame({}, { u2: { 2: workspace('first version') } });
+		const { rerender } = render(<GamePage />);
+		await screen.findByRole('heading', { name: /1\. Problem Number 1/ });
+		await userEvent.click(screen.getByRole('tab', { name: 'Grace' }));
+		configureConnectedGame({}, { u2: { 2: workspace('second version') } });
+
+		rerender(<GamePage />);
+
+		expect((screen.getByTestId('monaco') as HTMLTextAreaElement).value).toBe('second version');
+	});
+
+	it('US-6-T-7 shows a teammate\'s starter code for the question they\'re on when they haven\'t shared any', async () => {
+		await renderPlayingGame({});
+
+		await userEvent.click(screen.getByRole('tab', { name: 'Grace' }));
+
+		expect((screen.getByTestId('monaco') as HTMLTextAreaElement).value).toBe(makeProblem(1, 'Easy').starter_code.replaceAll('\\n', '\n'));
+	});
+
+	it('US-6-T-7 lets you view a teammate\'s other match questions', async () => {
+		await renderPlayingGame({
+			u2: { 1: workspace('question 1 code for teammate'), 2: workspace('question 2 code for teammate') },
+		});
+		await userEvent.click(screen.getByRole('tab', { name: 'Grace' }));
+
+		await userEvent.click(screen.getByRole('button', { name: '2' }));
+
+		expect((screen.getByTestId('monaco') as HTMLTextAreaElement).value).toBe('question 2 code for teammate');
 	});
 });
 

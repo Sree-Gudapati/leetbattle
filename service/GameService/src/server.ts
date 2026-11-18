@@ -5,7 +5,7 @@ import { authenticateToken } from './auth';
 import type { AuthenticatedUser } from './auth';
 import { pool } from './db';
 import { findGame, forgetGame, GAME_DURATION_MS, gradeSubmission, onGameCreated, serializeGame } from './service';
-import type { GamePlayerState, GameState, Grading, TeamId } from './service';
+import type { GamePlayerState, GameState, Grading, TeamId, Workspace } from './service';
 
 // How long a new game waits for its players before the clock starts anyway.
 const DEFAULT_JOIN_WAIT_MS = 5_000;
@@ -42,28 +42,22 @@ interface Submission {
 	code?: unknown;
 }
 
-// What a player sends on `game:ban`.
-// One tab of a player's editor, as the practice editor keeps it.
-interface EditorTab {
-	id: string;
-	name: string;
-	code: string;
-}
-
-// A player's editor for one question: their tabs and which one is open.
-interface Workspace {
-	tabs: EditorTab[];
-	activeTabId: string;
-}
-
 // What a player sends on `game:code`.
 interface CodeUpdate {
 	questionId?: unknown;
 	workspace?: unknown;
 }
 
-const isEditorTab = (value: unknown): value is EditorTab => {
-	const tab = value as Partial<EditorTab> | null;
+// One entry of a `game:code:snapshot`: a teammate's saved workspace for one question.
+interface WorkspaceSnapshotEntry {
+	userId: string;
+	displayName: string;
+	questionId: number;
+	workspace: Workspace;
+}
+
+const isEditorTab = (value: unknown): value is Workspace['tabs'][number] => {
+	const tab = value as Partial<Workspace['tabs'][number]> | null;
 	return typeof tab?.id === 'string' && typeof tab.name === 'string' && typeof tab.code === 'string';
 };
 
@@ -89,6 +83,16 @@ export interface GameResult {
 }
 
 const otherTeam = (team: TeamId): TeamId => (team === 'a' ? 'b' : 'a');
+
+// A problem's full value by difficulty (US-6-T-8); anything else is worth nothing.
+const POINTS_BY_DIFFICULTY: Record<string, number> = { Easy: 150, Medium: 300, Hard: 450 };
+
+// The points a graded submission earns: the percent of testcases it passed,
+// of its difficulty's full value, floored to a whole number.
+export function pointsForSubmission(difficulty: string, passed: number, total: number): number {
+	if (total <= 0) return 0;
+	return Math.floor((passed / total) * (POINTS_BY_DIFFICULTY[difficulty] ?? 0));
+}
 
 // When the clock runs out, the higher score wins; level scores are a draw.
 export function resultOnTime({ a, b }: Record<TeamId, number>): GameResult {
@@ -258,6 +262,21 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 		player.left = false;
 		clearTimeout(game.timers.leave.get(user.id));
 		game.timers.leave.delete(user.id);
+
+		// Hands the joining or reconnecting player their teammates' saved code,
+		// so their workspaces can be shown read only even if this player missed
+		// the live "game:code" updates. Never includes this player's own
+		// workspace or anyone on the other team.
+		const snapshot: WorkspaceSnapshotEntry[] = teamOf(game, player.team)
+			.filter((teammate) => teammate.userId !== user.id)
+			.flatMap((teammate) => [...(game.workspaces.get(teammate.userId) ?? new Map())].map(([questionId, workspace]) => ({
+				userId: teammate.userId,
+				displayName: teammate.displayName,
+				questionId,
+				workspace,
+			})));
+		socket.emit('game:code:snapshot', snapshot);
+
 		if (game.phase === 'waiting' && [...game.players.values()].every((entry) => entry.connected)) {
 			startBanning(game);
 		} else {
@@ -284,11 +303,17 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 		});
 
 		// Passes a player's editor for one question on to their own team only,
-		// so the other team can never receive it. Nothing is saved here.
+		// so the other team can never receive it. Also saves it as this
+		// player's latest workspace for that question, so a teammate who joins
+		// or reconnects later still gets it (see "game:code:snapshot" above).
 		socket.on('game:code', (update: CodeUpdate) => {
 			if (game.phase !== 'playing') return;
 			if (!game.problemPool.some((problem) => problem.questionId === update?.questionId)) return;
 			if (!isWorkspace(update.workspace)) return;
+			const questionId = update.questionId as number;
+			const playerWorkspaces = game.workspaces.get(user.id) ?? new Map<number, Workspace>();
+			playerWorkspaces.set(questionId, update.workspace);
+			game.workspaces.set(user.id, playerWorkspaces);
 			socket.to(`${gameRoom(game)}:${player.team}`).emit('game:code', {
 				userId: user.id,
 				displayName: player.displayName,
@@ -366,6 +391,24 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 				game.cooldownUntil[team] = Date.now() + submitCooldownMs;
 			}
 			if (!grading) return ack({ error: 'grading-failed' });
+
+			// A team is only credited once per problem, for the best score it has
+			// reached on it; resubmitting for fewer points changes nothing.
+			const points = pointsForSubmission(problem.difficulty, grading.passed, grading.total);
+			const bestForTeam = game.bestScore[team];
+			const previousBest = bestForTeam.get(problem.taskId) ?? 0;
+			if (points > previousBest) {
+				game.scores[team] += points - previousBest;
+				bestForTeam.set(problem.taskId, points);
+			}
+			try {
+				await pool.query(
+					'INSERT INTO submissions (game_id, user_id, task_id, test_cases_passed, test_cases_total, points_awarded) VALUES ($1, $2, $3, $4, $5, $6)',
+					[game.gameId, user.id, problem.taskId, grading.passed, grading.total, points],
+				);
+			} catch (err) {
+				console.error('[game-service] failed to save the submission', err);
+			}
 
 			if (grading.verdict === 'Accepted') game.solved[team].add(problem.taskId);
 			ack(grading);

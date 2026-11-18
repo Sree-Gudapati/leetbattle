@@ -80,6 +80,9 @@ export interface EditorContextValue {
 	submitError: string | null;
 	loadingAction: LoadingAction;
 	isLoading: boolean;
+	// True when this provider is showing someone else's workspace: nothing can
+	// be edited, created, renamed or removed, and nothing is ever sent anywhere.
+	readOnly: boolean;
 }
 
 // Practice (/editor) passes none of these. In a match the game page passes all
@@ -90,11 +93,18 @@ interface EditorProviderProps {
 	questionIds?: number[];
 	submit?: (_questionId: number, _code: string) => Promise<SubmitResult>;
 	shareCode?: (_questionId: number, _workspace: EditorWorkspace) => void;
+	// Renders a teammate's workspace read only (see app/game/components --
+	// WorkspaceSwitcher): the same editor UI, driven by their shared code
+	// instead of this provider's own, with every mutation disabled.
+	readOnly?: boolean;
+	// The workspace to show per question while readOnly; a question with
+	// nothing in here yet falls back to its starter code.
+	externalWorkspaces?: Record<number, EditorWorkspace>;
 }
 
 const EditorContext = createContext<EditorContextValue | null>(null);
 
-export function EditorProvider({ children, questionIds, submit, shareCode }: EditorProviderProps) {
+export function EditorProvider({ children, questionIds, submit, shareCode, readOnly = false, externalWorkspaces }: EditorProviderProps) {
 	const { user } = useAuth();
 	const inMatch = questionIds !== undefined;
 	// The question_ids as a string, so a new array with the same ids (every
@@ -104,6 +114,9 @@ export function EditorProvider({ children, questionIds, submit, shareCode }: Edi
 	const [questions, setQuestions] = useState<Problem[]>([]);
 	const [currentQuestion, setCurrentQuestion] = useState<Problem | null>(null);
 	const [workspaces, setWorkspaces] = useState<Record<number, EditorWorkspace>>({});
+	// Overrides which of a read-only workspace's tabs is shown; browsing a
+	// teammate's tabs never touches their activeTabId, only this provider's own view of it.
+	const [localActiveTabId, setLocalActiveTabId] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [runResult, setRunResult] = useState<RunResult | null>(null);
 	const [submitResult, setSubmitResult] = useState<SubmitResult | null>(null);
@@ -112,10 +125,12 @@ export function EditorProvider({ children, questionIds, submit, shareCode }: Edi
 	const [loadingAction, setLoadingAction] = useState<LoadingAction>(null);
 	const socketRef = useRef<Socket | null>(null);
 	const testCases = currentQuestion ? parseTestCases(currentQuestion.input_output) : [];
+	const workspaceSource = readOnly ? (externalWorkspaces ?? {}) : workspaces;
 	const workspace = currentQuestion
-		? workspaces[currentQuestion.question_id] ?? createWorkspace(currentQuestion)
+		? workspaceSource[currentQuestion.question_id] ?? createWorkspace(currentQuestion)
 		: { tabs: [], activeTabId: '' };
-	const activeTab = workspace.tabs.find((tab) => tab.id === workspace.activeTabId) ?? workspace.tabs[0];
+	const activeTabId = (readOnly && localActiveTabId) || workspace.activeTabId;
+	const activeTab = workspace.tabs.find((tab) => tab.id === activeTabId) ?? workspace.tabs[0];
 	const code = activeTab?.code ?? '';
 
 	const applyRemoteWorkspace = useCallback((payload: unknown) => {
@@ -175,21 +190,26 @@ export function EditorProvider({ children, questionIds, submit, shareCode }: Edi
 	useEffect(() => () => clearTimeout(shareTimer.current), []);
 
 	const setCode = useCallback((nextCode: string) => {
-		if (!currentQuestion || !activeTab) return;
+		if (readOnly || !currentQuestion || !activeTab) return;
 		updateWorkspace({
 			...workspace,
 			tabs: workspace.tabs.map((tab) => tab.id === activeTab.id ? { ...tab, code: nextCode } : tab),
 		});
-	}, [activeTab, currentQuestion, updateWorkspace, workspace]);
+	}, [activeTab, currentQuestion, readOnly, updateWorkspace, workspace]);
 
 	const selectTab = useCallback((tabId: string) => {
-		if (workspace.tabs.some((tab) => tab.id === tabId)) {
-			updateWorkspace({ ...workspace, activeTabId: tabId });
+		if (!workspace.tabs.some((tab) => tab.id === tabId)) return;
+		// Browsing a teammate's tabs only changes this provider's own view of
+		// which one is open; it never writes back into their workspace.
+		if (readOnly) {
+			setLocalActiveTabId(tabId);
+			return;
 		}
-	}, [updateWorkspace, workspace]);
+		updateWorkspace({ ...workspace, activeTabId: tabId });
+	}, [readOnly, updateWorkspace, workspace]);
 
 	const createTab = useCallback(() => {
-		if (!currentQuestion) return;
+		if (readOnly || !currentQuestion) return;
 		const nextIndex = workspace.tabs.length + 1;
 		const tab: EditorTab = {
 			id: `tab-${nextIndex}`,
@@ -200,10 +220,10 @@ export function EditorProvider({ children, questionIds, submit, shareCode }: Edi
 			tabs: [...workspace.tabs, tab],
 			activeTabId: tab.id,
 		});
-	}, [currentQuestion, updateWorkspace, workspace]);
+	}, [currentQuestion, readOnly, updateWorkspace, workspace]);
 
 	const copyTab = useCallback((tabId: string) => {
-		if (!currentQuestion) return;
+		if (readOnly || !currentQuestion) return;
 		const source = workspace.tabs.find((tab) => tab.id === tabId);
 		if (!source) return;
 		const nextIndex = workspace.tabs.length + 1;
@@ -213,23 +233,30 @@ export function EditorProvider({ children, questionIds, submit, shareCode }: Edi
 			name: `Tab ${nextIndex}`,
 		};
 		updateWorkspace({ tabs: [...workspace.tabs, copy], activeTabId: copy.id });
-	}, [currentQuestion, updateWorkspace, workspace]);
+	}, [currentQuestion, readOnly, updateWorkspace, workspace]);
 
 	const renameTab = useCallback((tabId: string, name: string) => {
+		if (readOnly) return;
 		const nextName = name.trim();
 		if (!nextName) return;
 		updateWorkspace({
 			...workspace,
 			tabs: workspace.tabs.map((tab) => tab.id === tabId ? { ...tab, name: nextName } : tab),
 		});
-	}, [updateWorkspace, workspace]);
+	}, [readOnly, updateWorkspace, workspace]);
 
 	const removeTab = useCallback((tabId: string) => {
-		if (workspace.tabs.length < 2) return;
+		if (readOnly || workspace.tabs.length < 2) return;
 		const tabs = workspace.tabs.filter((tab) => tab.id !== tabId);
-		const activeTabId = workspace.activeTabId === tabId ? tabs[0].id : workspace.activeTabId;
-		updateWorkspace({ tabs, activeTabId });
-	}, [updateWorkspace, workspace]);
+		const nextActiveTabId = workspace.activeTabId === tabId ? tabs[0].id : workspace.activeTabId;
+		updateWorkspace({ tabs, activeTabId: nextActiveTabId });
+	}, [readOnly, updateWorkspace, workspace]);
+
+	// Browsing a teammate's tabs is local to whichever question is on screen;
+	// switching questions always starts from that question's own open tab.
+	useEffect(() => {
+		setLocalActiveTabId(null);
+	}, [currentQuestion?.question_id]);
 
 	useEffect(() => {
 		const api = new APIService();
@@ -241,7 +268,12 @@ export function EditorProvider({ children, questionIds, submit, shareCode }: Edi
 		load
 			.then((problems) => {
 				setQuestions(problems);
-				setCurrentQuestion(problems[0] ?? null);
+				// Readonly workspace: default to a question the teammate has
+				// actually shared code for, not just the first in the pool.
+				const preferred = readOnly && externalWorkspaces
+					? problems.find((problem) => externalWorkspaces[problem.question_id]) ?? problems[0]
+					: problems[0];
+				setCurrentQuestion(preferred ?? null);
 			})
 			.catch((err) => setError(err.message));
 	}, [questionIdsKey]);
@@ -282,7 +314,7 @@ export function EditorProvider({ children, questionIds, submit, shareCode }: Edi
 				setCurrentQuestion,
 				testCases,
 				tabs: workspace.tabs,
-				activeTabId: workspace.activeTabId,
+				activeTabId,
 				selectTab,
 				createTab,
 				copyTab,
@@ -298,6 +330,7 @@ export function EditorProvider({ children, questionIds, submit, shareCode }: Edi
 				submitError,
 				loadingAction,
 				isLoading: loadingAction !== null,
+				readOnly,
 			}}
 		>
 			{children}

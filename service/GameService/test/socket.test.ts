@@ -102,7 +102,7 @@ import { io } from 'socket.io-client';
 import type { Socket } from 'socket.io-client';
 import { gameServer, request, socketUrl } from './setup';
 import { pool } from '../src/db';
-import { resultOnTime } from '../src/server';
+import { pointsForSubmission, resultOnTime } from '../src/server';
 import { FAKE_GRADING_MS, fakeCodeServiceFetch, fakeTags, sixReadyPlayers } from './fixtures';
 import type { ReadyPlayer } from './fixtures';
 
@@ -512,7 +512,8 @@ describe('after the game ends', () => {
 
 	it('leaves the players with no active game', async () => {
 		const { game } = await forfeitedGame();
-		const res = await request.get(`/game/${game.players[0].userId}`);
+		// US-6-T-8: the endpoint now needs the player's own login token.
+		const res = await request.get(`/game/${game.players[0].userId}`).set('Authorization', `Bearer ${await tokenFor(game.players[0].userId)}`);
 		expect(res.status).toBe(404);
 	});
 });
@@ -984,5 +985,218 @@ describe('relaying code to teammates', () => {
 		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: { tabs: 'not a list' } });
 		await pause(RELAY_WAIT_MS);
 		expect(teammate).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// US-6-T-7: GameService should keep a readable reference of every player's
+// shared code and hand a joining or reconnecting player a "game:code:snapshot"
+// of their teammates' saved workspaces, so the practice editor can show a
+// teammate's workspace read only even if the viewer missed the live updates
+// (see src/server.ts, "game:code:snapshot").
+// ---------------------------------------------------------------------------
+
+// A second workspace, so tests can tell which of two shares was saved last.
+const WORKSPACE_2 = { tabs: [{ id: 'tab-1', name: 'Tab 1', code: 'def solve():\n    return 2' }], activeTabId: 'tab-1' };
+
+// One entry of a `game:code:snapshot`: a teammate's saved workspace for one question.
+interface SnapshotEntry {
+	userId: string;
+	displayName: string;
+	questionId: number;
+	workspace: typeof WORKSPACE;
+}
+
+// Disconnects `socket` and opens a fresh connection for `userId`, resolving with
+// the new socket and the `game:code:snapshot` GameService sends on the way in.
+// The snapshot listener has to be registered before connecting: GameService
+// sends it immediately, so adding the listener after connect() could miss it.
+async function reconnect(socket: Socket, userId: string, gameIdToJoin: string): Promise<{ socket: Socket; snapshot: SnapshotEntry[] }> {
+	socket.disconnect();
+	const rejoined = openSocket({ token: await tokenFor(userId), gameId: gameIdToJoin });
+	const snapshot = nextEvent<SnapshotEntry[]>(rejoined, 'game:code:snapshot');
+	const state = nextState(rejoined);
+	rejoined.connect();
+	await state;
+	return { socket: rejoined, snapshot: await snapshot };
+}
+
+describe('saving teammates\' code for players who join later', () => {
+	it('gives a reconnecting player the workspace a teammate shared earlier', async () => {
+		const { game, sockets, pool } = await playingGame(2, 2);
+		const relayed = nextEvent<CodePayload>(sockets[1], 'game:code');
+		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE });
+		await relayed;
+
+		const { snapshot } = await reconnect(sockets[1], game.players[1].userId, game.gameId);
+
+		expect(snapshot).toEqual([
+			{ userId: game.players[0].userId, displayName: game.players[0].displayName, questionId: pool[0].questionId, workspace: WORKSPACE },
+		]);
+	});
+
+	it('replaces a player\'s saved workspace instead of keeping both when they share the same question again', async () => {
+		const { game, sockets, pool } = await playingGame(2, 2);
+		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE });
+		await nextEvent(sockets[1], 'game:code');
+		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE_2 });
+		await nextEvent(sockets[1], 'game:code');
+
+		const { snapshot } = await reconnect(sockets[1], game.players[1].userId, game.gameId);
+
+		expect(snapshot).toEqual([
+			{ userId: game.players[0].userId, displayName: game.players[0].displayName, questionId: pool[0].questionId, workspace: WORKSPACE_2 },
+		]);
+	});
+
+	it('saves a player\'s workspace for each question separately', async () => {
+		const { game, sockets, pool } = await playingGame(2, 2);
+		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE });
+		await nextEvent(sockets[1], 'game:code');
+		sockets[0].emit('game:code', { questionId: pool[1].questionId, workspace: WORKSPACE_2 });
+		await nextEvent(sockets[1], 'game:code');
+
+		const { snapshot } = await reconnect(sockets[1], game.players[1].userId, game.gameId);
+
+		expect(snapshot.map((entry) => entry.questionId).sort()).toEqual([pool[0].questionId, pool[1].questionId].sort());
+	});
+
+	it('never includes the reconnecting player\'s own saved workspace', async () => {
+		const { game, sockets, pool } = await playingGame(2, 2);
+		sockets[1].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE });
+		await nextEvent(sockets[0], 'game:code');
+
+		const { snapshot } = await reconnect(sockets[1], game.players[1].userId, game.gameId);
+
+		expect(snapshot).toEqual([]);
+	});
+
+	it('never includes a player from the other team', async () => {
+		const { game, sockets, pool } = await playingGame(2, 2);
+		sockets[2].emit('game:code', { questionId: pool[0].questionId, workspace: WORKSPACE });
+		await pause(RELAY_WAIT_MS);
+
+		const { snapshot } = await reconnect(sockets[1], game.players[1].userId, game.gameId);
+
+		expect(snapshot).toEqual([]);
+	});
+
+	it('does not save a malformed workspace', async () => {
+		const { game, sockets, pool } = await playingGame(2, 2);
+		sockets[0].emit('game:code', { questionId: pool[0].questionId, workspace: { tabs: 'not a list' } });
+		await pause(RELAY_WAIT_MS);
+
+		const { snapshot } = await reconnect(sockets[1], game.players[1].userId, game.gameId);
+
+		expect(snapshot).toEqual([]);
+	});
+
+	it('does not include a teammate who hasn\'t shared any code', async () => {
+		const { game, sockets } = await playingGame(2, 2);
+
+		const { snapshot } = await reconnect(sockets[1], game.players[1].userId, game.gameId);
+
+		expect(snapshot).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// US-6-T-8: scoring submissions by the percent of testcases passed. Points
+// are floor(passed / total * {Easy: 150, Medium: 300, Hard: 450}); a team is
+// only credited once per problem for the best score it has reached on it
+// (see src/server.ts, "game:submit" and pointsForSubmission).
+// ---------------------------------------------------------------------------
+
+// The fake CodeService's pool is always 6 Easy + 3 Medium (see fixtures.ts),
+// so every scoring test can rely on finding one of each.
+function requireProblem(problems: PoolProblemPayload[], difficulty: string): PoolProblemPayload {
+	const found = problems.find((problem) => problem.difficulty === difficulty);
+	if (!found) throw new Error(`No ${difficulty} problem in the pool`);
+	return found;
+}
+
+describe('awarding points by percent of testcases passed', () => {
+	it('awards an Easy problem\'s full points for passing every case', () => {
+		expect(pointsForSubmission('Easy', 3, 3)).toBe(150);
+	});
+
+	it('awards a Medium problem partial points for the fraction of cases it passed', () => {
+		expect(pointsForSubmission('Medium', 2, 3)).toBe(200);
+	});
+
+	it('awards a Hard problem partial points for the fraction of cases it passed', () => {
+		expect(pointsForSubmission('Hard', 1, 4)).toBe(112);
+	});
+
+	it('awards no points for passing none of a problem\'s cases', () => {
+		expect(pointsForSubmission('Easy', 0, 3)).toBe(0);
+	});
+});
+
+describe('scoring submissions', () => {
+	it('adds a scored submission\'s points to the submitting player\'s team score', async () => {
+		const { sockets, pool: matchPool } = await playingGame(1, 1);
+		const easy = requireProblem(matchPool, 'Easy');
+		const scored = nextState(sockets[0], (state) => state.scores.a > 0);
+		await submit(sockets[0], easy.questionId, 'correct');
+		expect((await scored).scores.a).toBe(150);
+	});
+
+	it('sends the updated score to the whole game room, not just the submitter', async () => {
+		const { sockets, pool: matchPool } = await playingGame(1, 1);
+		const easy = requireProblem(matchPool, 'Easy');
+		// sockets[1] is team b; broadcastState reaches every player in the match.
+		const scored = nextState(sockets[1], (state) => state.scores.a > 0);
+		await submit(sockets[0], easy.questionId, 'correct');
+		expect((await scored).scores.a).toBe(150);
+	});
+
+	it('does not lower a team\'s score when a resubmission scores fewer points', async () => {
+		const { sockets, pool: matchPool } = await playingGame(1, 1);
+		const medium = requireProblem(matchPool, 'Medium');
+		await submit(sockets[0], medium.questionId, 'partial:3/3'); // 300 points
+		await pause(AFTER_COOLDOWN_MS);
+		const resubmitted = nextState(sockets[0]);
+		await submit(sockets[0], medium.questionId, 'partial:1/3'); // would be 100 points
+		expect((await resubmitted).scores.a).toBe(300);
+	});
+
+	it('raises a team\'s score by only the difference when a resubmission scores more points', async () => {
+		const { sockets, pool: matchPool } = await playingGame(1, 1);
+		const medium = requireProblem(matchPool, 'Medium');
+		await submit(sockets[0], medium.questionId, 'partial:1/3'); // 100 points
+		await pause(AFTER_COOLDOWN_MS);
+		const resubmitted = nextState(sockets[0]);
+		await submit(sockets[0], medium.questionId, 'partial:3/3'); // 300 points
+		expect((await resubmitted).scores.a).toBe(300);
+	});
+
+	it('does not change a team\'s score when a resubmission scores the same points again', async () => {
+		const { sockets, pool: matchPool } = await playingGame(1, 1);
+		const medium = requireProblem(matchPool, 'Medium');
+		await submit(sockets[0], medium.questionId, 'partial:2/3'); // 200 points
+		await pause(AFTER_COOLDOWN_MS);
+		const resubmitted = nextState(sockets[0]);
+		await submit(sockets[0], medium.questionId, 'partial:2/3'); // still 200 points
+		expect((await resubmitted).scores.a).toBe(200);
+	});
+});
+
+describe('saving scored submissions', () => {
+	it('saves a scored submission with the player, problem and points it was awarded', async () => {
+		const { game, sockets, pool: matchPool } = await playingGame(1, 1);
+		const easy = requireProblem(matchPool, 'Easy');
+		await submit(sockets[0], easy.questionId, 'correct');
+		const saved = await pool.query(
+			'SELECT user_id, task_id, test_cases_passed, test_cases_total, points_awarded FROM submissions WHERE game_id = $1',
+			[game.gameId],
+		);
+		expect(saved.rows).toEqual([{
+			user_id: game.players[0].userId,
+			task_id: easy.taskId,
+			test_cases_passed: 3,
+			test_cases_total: 3,
+			points_awarded: 150,
+		}]);
 	});
 });
