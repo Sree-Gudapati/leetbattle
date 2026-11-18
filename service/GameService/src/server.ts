@@ -339,8 +339,9 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 		// Team chat (US-3-T-2): saves a player's message to team_messages, then
 		// passes it on to their own team, sender included. The game, team and
 		// user come from the server's roster and the authenticated socket, never
-		// the client. The saved row's id and time are the ones sent out.
-		socket.on('chat:send', async (message: { text?: unknown }, ack?: (_response: { error: string }) => void) => {
+		// the client. The saved row's id and time are the ones sent out. The sender
+		// is answered { ok: true } once the message is out, or { error } if refused.
+		socket.on('chat:send', async (message: { text?: unknown }, ack?: (_response: { ok: true } | { error: string }) => void) => {
 			const reply = typeof ack === 'function' ? ack : () => undefined;
 			if (game.phase === 'ended') return;
 			const text = message?.text;
@@ -370,6 +371,7 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 				text,
 				sentAt: saved.sent_at.toISOString(),
 			});
+			reply({ ok: true });
 		});
 
 		// A team forfeits once every teammate still in the game has voted to.
