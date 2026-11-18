@@ -358,4 +358,17 @@ describe('chat errors going away', () => {
 		act(() => vi.advanceTimersByTime(100));
 		expect(screen.queryByRole('alert')).toBeNull();
 	});
+
+	it('US-3-T-4 hides a chat error straight away when the next message is accepted', async () => {
+		const fake = renderChatWithSocket();
+		const rejected = await sendAndGetAnswer(fake);
+		act(() => rejected({ error: 'Whoa, slow down!' }));
+
+		// The rejected text is still in the box; send it again and have it accepted.
+		await userEvent.setup().click(sendButton());
+		const accepted = fake.socket.emit.mock.calls[1][2] as (_response: { ok: true }) => void;
+		await act(async () => accepted({ ok: true }));
+
+		expect(screen.queryByRole('alert')).toBeNull();
+	});
 });
