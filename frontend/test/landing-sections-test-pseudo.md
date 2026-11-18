@@ -28,3 +28,6 @@
 
  // No periods
  //  - No single-line text in the scroll sections should end with a period
+
+// US5-Task16 (#131): the landing page should not trap scrolling
+//  - The landing page wrapper should not use overflow-hidden (it stops the scroll animations and the pinned clock)

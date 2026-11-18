@@ -7,7 +7,7 @@ import ScrollSections from './scroll-sections';
 
 export default function LandingPage() {
 	return (
-		<div className="relative flex-1 overflow-hidden">
+		<div className="relative flex-1 overflow-x-clip">
 			<Intro />
 
 			<div className="mx-auto max-w-[1180px] px-6 sm:px-8">
