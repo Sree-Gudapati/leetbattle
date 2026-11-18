@@ -106,3 +106,14 @@ describe('scroll progress and text', () => {
 		expect(linesEndingInPeriod(screen.getByTestId('scroll-sections'))).toEqual([]);
 	});
 });
+
+// US5-Task16 (#131). Pseudocode: test/landing-sections-test-pseudo.md
+// `overflow: hidden` makes an element a scroll container of its own. The
+// scroll-driven animations and the sticky clock then follow that wrapper,
+// which never scrolls, instead of the page, so nothing moves.
+describe('landing scrolling', () => {
+	it('US5-Task16 does not use overflow-hidden on the landing page wrapper', () => {
+		const wrapper = screen.getByTestId('scroll-sections').closest('.flex-1') as HTMLElement;
+		expect(wrapper.className.split(' ')).not.toContain('overflow-hidden');
+	});
+});
