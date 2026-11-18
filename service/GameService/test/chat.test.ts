@@ -404,3 +404,19 @@ describe('team chat rate limiting', () => {
 		expect(received).toEqual(['first']);
 	});
 });
+
+describe('team chat text with SQL in it', () => {
+	const sql = "'); DROP TABLE team_messages; --";
+
+	it('US-3-T-4 saves a message containing SQL as plain text', async () => {
+		const row = await sendAndReadSavedRow(sql);
+		expect(row.text).toBe(sql);
+	});
+
+	it('US-3-T-4 does not run a message containing SQL as a SQL command', async () => {
+		await sendAndReadSavedRow(sql);
+		// Had the text run, team_messages would be gone and this query would throw.
+		const { rows } = await pool.query('SELECT COUNT(*)::int AS count FROM team_messages WHERE game_id = $1', [gameId]);
+		expect(rows[0].count).toBe(1);
+	});
+});
