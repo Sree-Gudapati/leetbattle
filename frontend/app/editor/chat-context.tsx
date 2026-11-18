@@ -2,7 +2,7 @@
 // With a game socket (US-3-T-2), `send` emits `chat:send` to GameService.
 // Without one, messages live in local state only.
 'use client';
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, ReactNode } from 'react';
 import type { Socket } from 'socket.io-client';
 import { useAuth } from '../login/context';
 
@@ -23,6 +23,9 @@ export interface ChatContextValue {
 
 const ChatContext = createContext<ChatContextValue | null>(null);
 
+// How long a chat error stays on screen before it goes away on its own.
+const ERROR_SHOWN_MS = 5_000;
+
 export function ChatProvider({
 	children,
 	initialMessages = [],
@@ -36,6 +39,16 @@ export function ChatProvider({
 	const { user } = useAuth();
 	const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
 	const [error, setError] = useState<string | null>(null);
+	const errorTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+	// Shows `text` for ERROR_SHOWN_MS. A new error restarts the clock, so a
+	// second "Whoa, slow down!" stays up for the full 5 seconds too.
+	const showError = (text: string) => {
+		clearTimeout(errorTimer.current);
+		setError(text);
+		errorTimer.current = setTimeout(() => setError(null), ERROR_SHOWN_MS);
+	};
+	useEffect(() => () => clearTimeout(errorTimer.current), []);
 
 	// GameService sends each team message (the player's own included) as `chat:message`.
 	useEffect(() => {
@@ -54,7 +67,7 @@ export function ChatProvider({
 			return new Promise((resolve) => {
 				socket.emit('chat:send', { text: text.trim() }, (response?: { ok?: true; error?: string }) => {
 					if (response?.error) {
-						setError(response.error);
+						showError(response.error);
 						resolve(false);
 						return;
 					}
