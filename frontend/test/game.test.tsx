@@ -478,9 +478,10 @@ describe('game page teammates next to Forfeit', () => {
 		configureConnectedGame();
 		render(<GamePage />);
 
+		const list = within(screen.getAllByRole('banner')[0]).getByRole('list', { name: 'Teammates' });
 		const forfeit = screen.getByRole('button', { name: 'Forfeit' });
 		// DOCUMENT_POSITION_FOLLOWING: the Forfeit button comes after the list.
-		expect(teammatesList()!.compareDocumentPosition(forfeit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(list.compareDocumentPosition(forfeit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 	});
 
 	it('US-6-T-12 hides the teammates while waiting for players', () => {

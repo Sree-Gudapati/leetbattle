@@ -78,6 +78,21 @@ function Roster({ team, players, userId }: { team: typeof TEAMS[number]; players
 	);
 }
 
+// The player's connected teammates, by name, just left of Forfeit in the top
+// bar: the people whose confirmation a forfeit needs. Nothing when none are left.
+function ConnectedTeammates({ teammates }: { teammates: GamePlayer[] }) {
+	if (teammates.length === 0) return null;
+	return (
+		<ul aria-label="Teammates" className="flex items-center gap-1.5">
+			{teammates.map((teammate) => (
+				<li key={teammate.userId} className="rounded-full border border-line bg-raised px-2.5 py-0.5 text-[13px] font-medium text-muted">
+					{teammate.displayName}
+				</li>
+			))}
+		</ul>
+	);
+}
+
 // The top-bar button plus its confirmation. Once sent it stays disabled: the
 // team forfeits when every connected teammate has confirmed.
 function ForfeitControl({ onForfeit }: { onForfeit: () => void }) {
@@ -195,7 +210,12 @@ function GameContent() {
 	return (
 		<div className="flex min-h-screen flex-col bg-page font-sans text-ink">
 			<PageLoader variant="pen" />
-			<HomeTopBar actions={playing && <ForfeitControl onForfeit={forfeit} />} />
+			<HomeTopBar actions={playing && (
+				<>
+					<ConnectedTeammates teammates={teammates.filter((entry) => entry.connected)} />
+					<ForfeitControl onForfeit={forfeit} />
+				</>
+			)} />
 			<main className="flex-1 px-5 pt-12 pb-16">
 				<div className="mx-auto flex max-w-[1040px] flex-col gap-8">
 					<div className="flex flex-wrap items-end justify-between gap-4">
