@@ -35,3 +35,14 @@
 // The match page should show team chat while the game is being played
 //  - While playing, the match page should display a "Team chat" panel
 //  - Sending a comment on the match page should emit "chat:send" on the game socket
+
+
+// US-3-T-4
+
+// Team chat should handle rejected messages and unsafe text
+//  - When a message is rate limited, the chat panel should show "Whoa, slow down!" 
+//  - When a message is rejected, the message box should keep its text  
+//  - A chat error shown in the chat panel should disappear after 5 seconds  
+//  - HTML / scripts in a message should be shown as text  
+//  - HTML / scripts in a message should not run  
+//  - A message containing SQL should be shown as plain text 

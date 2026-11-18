@@ -31,3 +31,19 @@
  // GameService should keep chat separate between games
  //  - When two games are running, a "chat:send" in one game should not reach the players of the other game
  //  - The saved "team_messages" row should have the id of the game the message was sent in
+
+
+
+// Task: US-3-T-4 
+// Team chat should rate limit messages and not store rejected ones
+//  - A second "chat:send" from the same player within 1 second should be rejected with "Whoa, slow down!"
+//  - A rejected message should not be saved to "team_messages" 
+//  - A rejected message should not cause a "chat:message" to be sent  
+
+// Team chat should store message text safely
+//  - A message containing SQL should be saved as plain text 
+//  - A message containing SQL should not be run as a SQL command 
+
+// Team chat messages should be cleaned up when a game ends
+//  - When a game ends, messages older than 10 days should be deleted  
+//  - When a game ends, messages newer than 10 days should be kept
