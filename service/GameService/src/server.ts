@@ -18,6 +18,10 @@ const DEFAULT_SUBMIT_COOLDOWN_MS = 5_000;
 const DEFAULT_BAN_WINDOW_MS = 30_000;
 // The longest team chat message GameService accepts, in characters.
 const MAX_CHAT_LENGTH = 500;
+// The shortest time between two team chat messages from the same player.
+const CHAT_RATE_LIMIT_MS = 1_000;
+// How long team chat messages are kept before they are deleted, in days.
+const CHAT_RETENTION_DAYS = 10;
 
 interface ServerOptions {
 	origins?: string[];
@@ -157,6 +161,16 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 			);
 		} catch (err) {
 			console.error('[game-service] failed to persist game end', err);
+		}
+		// Deletes every game's old team chat, not just this one's. Done before
+		// game:ended goes out so it has finished when the players hear the result.
+		try {
+			await pool.query(
+				'DELETE FROM team_messages WHERE sent_at < NOW() - make_interval(days => $1)',
+				[CHAT_RETENTION_DAYS],
+			);
+		} catch (err) {
+			console.error('[game-service] failed to delete old chat messages', err);
 		}
 		io.to(gameRoom(game)).emit('game:ended', result);
 		io.in(gameRoom(game)).disconnectSockets(true);
@@ -325,13 +339,19 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 		// Team chat (US-3-T-2): saves a player's message to team_messages, then
 		// passes it on to their own team, sender included. The game, team and
 		// user come from the server's roster and the authenticated socket, never
-		// the client. The saved row's id and time are the ones sent out.
-		socket.on('chat:send', async (message: { text?: unknown }, ack?: (_response: { error: string }) => void) => {
+		// the client. The saved row's id and time are the ones sent out. The sender
+		// is answered { ok: true } once the message is out, or { error } if refused.
+		socket.on('chat:send', async (message: { text?: unknown }, ack?: (_response: { ok: true } | { error: string }) => void) => {
 			const reply = typeof ack === 'function' ? ack : () => undefined;
 			if (game.phase === 'ended') return;
 			const text = message?.text;
 			if (typeof text !== 'string') return;
 			if (text.length > MAX_CHAT_LENGTH) return reply({ error: 'Message too long' });
+			// Keyed by user, not socket, so a second tab shares the limit. Only
+			// accepted messages are recorded, so a rejected one doesn't count.
+			const now = Date.now();
+			if (now - (game.lastChatAt.get(user.id) ?? 0) < CHAT_RATE_LIMIT_MS) return reply({ error: 'Whoa, slow down!' });
+			game.lastChatAt.set(user.id, now);
 			let saved: { id: string; sent_at: Date };
 			try {
 				const { rows } = await pool.query(
@@ -351,6 +371,7 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 				text,
 				sentAt: saved.sent_at.toISOString(),
 			});
+			reply({ ok: true });
 		});
 
 		// A team forfeits once every teammate still in the game has voted to.

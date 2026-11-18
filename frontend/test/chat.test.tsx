@@ -300,3 +300,107 @@ describe('showing comments the server delivers', () => {
 		expect(screen.getByRole('alert').textContent).toBe('Message too long');
 	});
 });
+
+// US-3-T-4: chat safeguards in the chat panel (all tests use a mocked socket, no backend)
+
+// Types `text`, clicks Send, and returns the acknowledgement callback the
+// panel passed with chat:send, so a test can answer the way GameService would.
+async function sendAndGetAnswer(fake: ReturnType<typeof fakeSocket>, text = 'Question 1 is done') {
+	const user = userEvent.setup();
+	await user.type(messageBox(), text);
+	await user.click(sendButton());
+	return fake.socket.emit.mock.calls[0][2] as (_response: { ok: true } | { error: string }) => void;
+}
+
+describe('rejected messages', () => {
+	it('US-3-T-4 shows "Whoa, slow down!" in the chat panel when a message is rate limited', async () => {
+		const fake = renderChatWithSocket();
+		const answer = await sendAndGetAnswer(fake);
+
+		act(() => answer({ error: 'Whoa, slow down!' }));
+
+		expect(screen.getByRole('alert').textContent).toBe('Whoa, slow down!');
+	});
+
+	it('US-3-T-4 keeps the typed text in the message box when a message is rejected', async () => {
+		const fake = renderChatWithSocket();
+		const answer = await sendAndGetAnswer(fake, 'Question 1 is done');
+
+		act(() => answer({ error: 'Whoa, slow down!' }));
+
+		expect(messageBox().value).toBe('Question 1 is done');
+	});
+
+	it('US-3-T-4 empties the message box once a message is accepted', async () => {
+		const fake = renderChatWithSocket();
+		const answer = await sendAndGetAnswer(fake);
+
+		await act(async () => answer({ ok: true }));
+
+		expect(messageBox().value).toBe('');
+	});
+});
+
+describe('chat errors going away', () => {
+	afterEach(() => vi.useRealTimers());
+
+	it('US-3-T-4 hides a chat error 5 seconds after it is shown', async () => {
+		const fake = renderChatWithSocket();
+		const answer = await sendAndGetAnswer(fake);
+		// Fake timers from here on, so the test can move the clock itself.
+		vi.useFakeTimers();
+
+		act(() => answer({ error: 'Whoa, slow down!' }));
+		act(() => vi.advanceTimersByTime(4_900));
+		// Still there just before the 5 seconds are up.
+		expect(screen.getByRole('alert').textContent).toBe('Whoa, slow down!');
+
+		act(() => vi.advanceTimersByTime(100));
+		expect(screen.queryByRole('alert')).toBeNull();
+	});
+
+	it('US-3-T-4 hides a chat error straight away when the next message is accepted', async () => {
+		const fake = renderChatWithSocket();
+		const rejected = await sendAndGetAnswer(fake);
+		act(() => rejected({ error: 'Whoa, slow down!' }));
+
+		// The rejected text is still in the box; send it again and have it accepted.
+		await userEvent.setup().click(sendButton());
+		const accepted = fake.socket.emit.mock.calls[1][2] as (_response: { ok: true }) => void;
+		await act(async () => accepted({ ok: true }));
+
+		expect(screen.queryByRole('alert')).toBeNull();
+	});
+});
+
+describe('unsafe text in chat messages', () => {
+	// Shows an incoming chat:message with `text` and returns the chat panel.
+	function showIncoming(text: string): HTMLElement {
+		const fake = renderChatWithSocket();
+		act(() => fake.fire('chat:message', { ...fromGrace, text }));
+		return screen.getByRole('region', { name: 'Team chat' });
+	}
+
+	it('US-3-T-4 shows HTML in a message as text', () => {
+		const panel = showIncoming('<b>hi</b>');
+
+		expect(screen.getByTestId('chat-text').textContent).toBe('<b>hi</b>');
+		// Had it been rendered as HTML, the panel would have a bold element.
+		expect(panel.querySelector('b')).toBeNull();
+	});
+
+	it('US-3-T-4 does not run scripts in a message', () => {
+		const panel = showIncoming('<script>alert("hacked")</script><img src="x" onerror="alert(\'hacked\')">');
+
+		expect(screen.getByTestId('chat-text').textContent).toBe('<script>alert("hacked")</script><img src="x" onerror="alert(\'hacked\')">');
+		// No script or image (whose onerror would run) made it into the page.
+		expect(panel.querySelector('script')).toBeNull();
+		expect(panel.querySelector('img')).toBeNull();
+	});
+
+	it('US-3-T-4 shows a message containing SQL as plain text', () => {
+		showIncoming('\'); DROP TABLE team_messages; --');
+
+		expect(screen.getByTestId('chat-text').textContent).toBe('\'); DROP TABLE team_messages; --');
+	});
+});

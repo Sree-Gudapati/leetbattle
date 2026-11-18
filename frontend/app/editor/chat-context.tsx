@@ -2,7 +2,7 @@
 // With a game socket (US-3-T-2), `send` emits `chat:send` to GameService.
 // Without one, messages live in local state only.
 'use client';
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, ReactNode } from 'react';
 import type { Socket } from 'socket.io-client';
 import { useAuth } from '../login/context';
 
@@ -15,12 +15,16 @@ export interface ChatMessage {
 
 export interface ChatContextValue {
 	messages: ChatMessage[];
-	send: (_text: string) => void;
+	// Resolves true once the message is accepted, false if GameService refuses it.
+	send: (_text: string) => Promise<boolean>;
 	// Why GameService refused the last message (e.g. "Message too long"), if it did.
 	error: string | null;
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
+
+// How long a chat error stays on screen before it goes away on its own.
+const ERROR_SHOWN_MS = 5_000;
 
 export function ChatProvider({
 	children,
@@ -35,6 +39,16 @@ export function ChatProvider({
 	const { user } = useAuth();
 	const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
 	const [error, setError] = useState<string | null>(null);
+	const errorTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+	// Shows `text` for ERROR_SHOWN_MS. A new error restarts the clock, so a
+	// second "Whoa, slow down!" stays up for the full 5 seconds too.
+	const showError = (text: string) => {
+		clearTimeout(errorTimer.current);
+		setError(text);
+		errorTimer.current = setTimeout(() => setError(null), ERROR_SHOWN_MS);
+	};
+	useEffect(() => () => clearTimeout(errorTimer.current), []);
 
 	// GameService sends each team message (the player's own included) as `chat:message`.
 	useEffect(() => {
@@ -46,14 +60,23 @@ export function ChatProvider({
 		};
 	}, [socket]);
 
-	const send = (text: string) => {
+	const send = (text: string): Promise<boolean> => {
 		// Over the socket, the message only shows once GameService sends it back.
 		if (socket) {
-			// GameService answers only to refuse a message, with { error }.
-			socket.emit('chat:send', { text: text.trim() }, (response?: { error?: string }) => {
-				if (response?.error) setError(response.error);
+			// GameService answers { ok: true } once it accepts the message, or { error } to refuse it.
+			return new Promise((resolve) => {
+				socket.emit('chat:send', { text: text.trim() }, (response?: { ok?: true; error?: string }) => {
+					if (response?.error) {
+						showError(response.error);
+						resolve(false);
+						return;
+					}
+					// An accepted message means the player has slowed down; drop the error now.
+					clearTimeout(errorTimer.current);
+					setError(null);
+					resolve(true);
+				});
 			});
-			return;
 		}
 		setMessages((current) => [
 			...current,
@@ -64,6 +87,7 @@ export function ChatProvider({
 				text: text.trim(),
 			},
 		]);
+		return Promise.resolve(true);
 	};
 
 	return <ChatContext.Provider value={{ messages, send, error }}>{children}</ChatContext.Provider>;
