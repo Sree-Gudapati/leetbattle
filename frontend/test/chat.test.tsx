@@ -340,3 +340,22 @@ describe('rejected messages', () => {
 		expect(messageBox().value).toBe('');
 	});
 });
+
+describe('chat errors going away', () => {
+	afterEach(() => vi.useRealTimers());
+
+	it('US-3-T-4 hides a chat error 5 seconds after it is shown', async () => {
+		const fake = renderChatWithSocket();
+		const answer = await sendAndGetAnswer(fake);
+		// Fake timers from here on, so the test can move the clock itself.
+		vi.useFakeTimers();
+
+		act(() => answer({ error: 'Whoa, slow down!' }));
+		act(() => vi.advanceTimersByTime(4_900));
+		// Still there just before the 5 seconds are up.
+		expect(screen.getByRole('alert').textContent).toBe('Whoa, slow down!');
+
+		act(() => vi.advanceTimersByTime(100));
+		expect(screen.queryByRole('alert')).toBeNull();
+	});
+});
