@@ -31,16 +31,21 @@ export const FAKE_GRADING_MS = 50;
 
 // Stands in for CodeService's POST /solution/:questionId endpoint. The code
 // itself decides the outcome: "correct" is Accepted, "crash" makes CodeService
-// fail with a 500, and anything else is a Wrong Answer.
+// fail with a 500, "partial:<passed>/<total>" grades exactly that many of
+// that many cases (for scoring tests - see test/socket.test.ts "scoring
+// submissions"), and anything else is a Wrong Answer.
 function fakeGrading(init?: RequestInit): Promise<Response> {
 	const { code } = JSON.parse(String(init?.body ?? '{}')) as { code?: string };
 	if (code === 'crash') {
 		return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({ message: 'boom' }) } as Response);
 	}
-	const verdict = code === 'correct' ? 'Accepted' : 'Wrong Answer';
+	const partial = code?.match(/^partial:(\d+)\/(\d+)$/);
+	const passed = partial ? Number(partial[1]) : code === 'correct' ? 3 : 1;
+	const total = partial ? Number(partial[2]) : 3;
+	const verdict = total > 0 && passed === total ? 'Accepted' : 'Wrong Answer';
 	return new Promise((resolve) => setTimeout(() => resolve({
 		ok: true,
-		json: () => Promise.resolve({ verdict, passed: verdict === 'Accepted' ? 3 : 1, total: 3 }),
+		json: () => Promise.resolve({ verdict, passed, total }),
 	} as Response), FAKE_GRADING_MS));
 }
 

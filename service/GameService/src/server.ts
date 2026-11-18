@@ -84,6 +84,16 @@ export interface GameResult {
 
 const otherTeam = (team: TeamId): TeamId => (team === 'a' ? 'b' : 'a');
 
+// A problem's full value by difficulty (US-6-T-8); anything else is worth nothing.
+const POINTS_BY_DIFFICULTY: Record<string, number> = { Easy: 150, Medium: 300, Hard: 450 };
+
+// The points a graded submission earns: the percent of testcases it passed,
+// of its difficulty's full value, floored to a whole number.
+export function pointsForSubmission(difficulty: string, passed: number, total: number): number {
+	if (total <= 0) return 0;
+	return Math.floor((passed / total) * (POINTS_BY_DIFFICULTY[difficulty] ?? 0));
+}
+
 // When the clock runs out, the higher score wins; level scores are a draw.
 export function resultOnTime({ a, b }: Record<TeamId, number>): GameResult {
 	return { winner: a === b ? null : a > b ? 'a' : 'b', reason: 'time' };
@@ -381,6 +391,24 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 				game.cooldownUntil[team] = Date.now() + submitCooldownMs;
 			}
 			if (!grading) return ack({ error: 'grading-failed' });
+
+			// A team is only credited once per problem, for the best score it has
+			// reached on it; resubmitting for fewer points changes nothing.
+			const points = pointsForSubmission(problem.difficulty, grading.passed, grading.total);
+			const bestForTeam = game.bestScore[team];
+			const previousBest = bestForTeam.get(problem.taskId) ?? 0;
+			if (points > previousBest) {
+				game.scores[team] += points - previousBest;
+				bestForTeam.set(problem.taskId, points);
+			}
+			try {
+				await pool.query(
+					'INSERT INTO submissions (game_id, user_id, task_id, test_cases_passed, test_cases_total, points_awarded) VALUES ($1, $2, $3, $4, $5, $6)',
+					[game.gameId, user.id, problem.taskId, grading.passed, grading.total, points],
+				);
+			} catch (err) {
+				console.error('[game-service] failed to save the submission', err);
+			}
 
 			if (grading.verdict === 'Accepted') game.solved[team].add(problem.taskId);
 			ack(grading);

@@ -102,7 +102,7 @@ import { io } from 'socket.io-client';
 import type { Socket } from 'socket.io-client';
 import { gameServer, request, socketUrl } from './setup';
 import { pool } from '../src/db';
-import { resultOnTime } from '../src/server';
+import { pointsForSubmission, resultOnTime } from '../src/server';
 import { FAKE_GRADING_MS, fakeCodeServiceFetch, fakeTags, sixReadyPlayers } from './fixtures';
 import type { ReadyPlayer } from './fixtures';
 
@@ -1097,5 +1097,106 @@ describe('saving teammates\' code for players who join later', () => {
 		const { snapshot } = await reconnect(sockets[1], game.players[1].userId, game.gameId);
 
 		expect(snapshot).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// US-6-T-8: scoring submissions by the percent of testcases passed. Points
+// are floor(passed / total * {Easy: 150, Medium: 300, Hard: 450}); a team is
+// only credited once per problem for the best score it has reached on it
+// (see src/server.ts, "game:submit" and pointsForSubmission).
+// ---------------------------------------------------------------------------
+
+// The fake CodeService's pool is always 6 Easy + 3 Medium (see fixtures.ts),
+// so every scoring test can rely on finding one of each.
+function requireProblem(problems: PoolProblemPayload[], difficulty: string): PoolProblemPayload {
+	const found = problems.find((problem) => problem.difficulty === difficulty);
+	if (!found) throw new Error(`No ${difficulty} problem in the pool`);
+	return found;
+}
+
+describe('awarding points by percent of testcases passed', () => {
+	it('awards an Easy problem\'s full points for passing every case', () => {
+		expect(pointsForSubmission('Easy', 3, 3)).toBe(150);
+	});
+
+	it('awards a Medium problem partial points for the fraction of cases it passed', () => {
+		expect(pointsForSubmission('Medium', 2, 3)).toBe(200);
+	});
+
+	it('awards a Hard problem partial points for the fraction of cases it passed', () => {
+		expect(pointsForSubmission('Hard', 1, 4)).toBe(112);
+	});
+
+	it('awards no points for passing none of a problem\'s cases', () => {
+		expect(pointsForSubmission('Easy', 0, 3)).toBe(0);
+	});
+});
+
+describe('scoring submissions', () => {
+	it('adds a scored submission\'s points to the submitting player\'s team score', async () => {
+		const { sockets, pool: matchPool } = await playingGame(1, 1);
+		const easy = requireProblem(matchPool, 'Easy');
+		const scored = nextState(sockets[0], (state) => state.scores.a > 0);
+		await submit(sockets[0], easy.questionId, 'correct');
+		expect((await scored).scores.a).toBe(150);
+	});
+
+	it('sends the updated score to the whole game room, not just the submitter', async () => {
+		const { sockets, pool: matchPool } = await playingGame(1, 1);
+		const easy = requireProblem(matchPool, 'Easy');
+		// sockets[1] is team b; broadcastState reaches every player in the match.
+		const scored = nextState(sockets[1], (state) => state.scores.a > 0);
+		await submit(sockets[0], easy.questionId, 'correct');
+		expect((await scored).scores.a).toBe(150);
+	});
+
+	it('does not lower a team\'s score when a resubmission scores fewer points', async () => {
+		const { sockets, pool: matchPool } = await playingGame(1, 1);
+		const medium = requireProblem(matchPool, 'Medium');
+		await submit(sockets[0], medium.questionId, 'partial:3/3'); // 300 points
+		await pause(AFTER_COOLDOWN_MS);
+		const resubmitted = nextState(sockets[0]);
+		await submit(sockets[0], medium.questionId, 'partial:1/3'); // would be 100 points
+		expect((await resubmitted).scores.a).toBe(300);
+	});
+
+	it('raises a team\'s score by only the difference when a resubmission scores more points', async () => {
+		const { sockets, pool: matchPool } = await playingGame(1, 1);
+		const medium = requireProblem(matchPool, 'Medium');
+		await submit(sockets[0], medium.questionId, 'partial:1/3'); // 100 points
+		await pause(AFTER_COOLDOWN_MS);
+		const resubmitted = nextState(sockets[0]);
+		await submit(sockets[0], medium.questionId, 'partial:3/3'); // 300 points
+		expect((await resubmitted).scores.a).toBe(300);
+	});
+
+	it('does not change a team\'s score when a resubmission scores the same points again', async () => {
+		const { sockets, pool: matchPool } = await playingGame(1, 1);
+		const medium = requireProblem(matchPool, 'Medium');
+		await submit(sockets[0], medium.questionId, 'partial:2/3'); // 200 points
+		await pause(AFTER_COOLDOWN_MS);
+		const resubmitted = nextState(sockets[0]);
+		await submit(sockets[0], medium.questionId, 'partial:2/3'); // still 200 points
+		expect((await resubmitted).scores.a).toBe(200);
+	});
+});
+
+describe('saving scored submissions', () => {
+	it('saves a scored submission with the player, problem and points it was awarded', async () => {
+		const { game, sockets, pool: matchPool } = await playingGame(1, 1);
+		const easy = requireProblem(matchPool, 'Easy');
+		await submit(sockets[0], easy.questionId, 'correct');
+		const saved = await pool.query(
+			'SELECT user_id, task_id, test_cases_passed, test_cases_total, points_awarded FROM submissions WHERE game_id = $1',
+			[game.gameId],
+		);
+		expect(saved.rows).toEqual([{
+			user_id: game.players[0].userId,
+			task_id: easy.taskId,
+			test_cases_passed: 3,
+			test_cases_total: 3,
+			points_awarded: 150,
+		}]);
 	});
 });
