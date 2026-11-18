@@ -622,3 +622,145 @@ describe('US-6-T-2 game start', () => {
 		expect(gameServiceFetch).toHaveBeenCalledTimes(2);
 	});
 });
+
+// US-1-T-2 Server should own each player's ready state
+//  - A ready request with a non-boolean value (e.g. "yes") should receive an "invalid-ready-status" error
+//  - After a ready request with a non-boolean value, the player should still be not ready
+// US-1-T-2 Every ready change should be broadcast to every client in the lobby
+//  - In a full 3v3 lobby, when one player readies up, every one of the six clients should see that player as ready
+//  - In a full 3v3 lobby, when a readied player un-readies, every one of the six clients should see that player as not ready
+//  - In a full 3v3 lobby, after one player readies up, every client should see a ready count of 1
+// US-1-T-2 Lobby should be ready to start once every player of the chosen size is ready
+//  - In a full 1v1 / 2v2 / 3v3 lobby, once every player readies up, the lobby should report it is ready to start
+// US-1-T-2 A readied player cannot switch teams in a full lobby
+//  - A readied player who asks to join the other team should receive a "team-full" error
+//  - After the rejected team switch, that player should still be ready
+// US-1-T-2 Leaving should reset ready state
+//  - When a readied player leaves, every remaining player should be not ready
+//  - When a readied player leaves, the ready count should be 0
+describe('US-1-T-2 ready state sync', () => {
+	// Builds a full lobby with `perTeam` players on each team. The first player
+	// is the host and shrinks the team size when it is below the default of 3;
+	// even indexes go to Team 1 and odd indexes to Team 2.
+	async function fullLobbyOfSize(prefix: string, perTeam: number): Promise<Socket[]> {
+		const sockets: Socket[] = [];
+		for (let seat = 0; seat < perTeam * 2; seat++) {
+			const socket = await connectUser(`${prefix}-${seat}`);
+			await emitAndWaitForState(socket, 'lobby:join', undefined, (state) => state.playerCount === seat + 1);
+			sockets.push(socket);
+			if (seat === 0 && perTeam < 3) {
+				await emitAndWaitForState(socket, 'lobby:set-team-size', perTeam, (state) => state.teamSize === perTeam);
+			}
+		}
+		for (const [seat, socket] of sockets.entries()) {
+			const team: 'a' | 'b' = seat % 2 === 0 ? 'a' : 'b';
+			await emitAndWaitForState(socket, 'lobby:join-team', team, (state) => state.players.find((player) => player.userId === `${prefix}-${seat}`)?.team === team);
+		}
+		return sockets;
+	}
+
+	// Readies the given player and resolves once the lobby has `expectedReadyCount` ready players.
+	function readyUp(socket: Socket, expectedReadyCount: number): Promise<LobbySnapshot> {
+		return emitAndWaitForState(socket, 'lobby:set-ready', true, (state) => state.readyCount === expectedReadyCount);
+	}
+
+	// Resolves with the first lobby:state each socket receives that matches `predicate`.
+	function stateOnEveryClient(sockets: Socket[], predicate: (_state: LobbySnapshot) => boolean): Promise<LobbySnapshot[]> {
+		return Promise.all(sockets.map((socket) => nextLobbyState(socket, predicate)));
+	}
+
+	const readyFlagOf = (state: LobbySnapshot, userId: string) => state.players.find((player) => player.userId === userId)?.ready;
+
+	// AC1: only a real boolean can change a ready flag.
+	it('US-1-T-2 rejects a non-boolean ready value with invalid-ready-status', async () => {
+		const socket = await connectUser('ready-bad-value');
+		await emitAndWaitForState(socket, 'lobby:join');
+		const error = nextEvent<{ code: string }>(socket, 'lobby:error');
+		socket.emit('lobby:set-ready', 'yes');
+		expect(await error).toMatchObject({ code: 'invalid-ready-status' });
+	});
+
+	// AC1: the rejected request leaves the server-held flag untouched.
+	it('US-1-T-2 keeps a player not ready after a non-boolean ready value', async () => {
+		const socket = await connectUser('ready-bad-value-state');
+		await emitAndWaitForState(socket, 'lobby:join');
+		const error = nextEvent(socket, 'lobby:error');
+		socket.emit('lobby:set-ready', 'yes');
+		await error;
+		expect(readyFlagOf(lobbyService.lobby.snapshot(), 'ready-bad-value-state')).toBe(false);
+	});
+
+	// AC2: a ready-up reaches all six clients, not just the sender.
+	it('US-1-T-2 shows a player who readies up as ready on all six clients', async () => {
+		const sockets = await fullLobbyOfSize('ready-broadcast', 3);
+		const seen = stateOnEveryClient(sockets, (state) => state.readyCount === 1);
+		sockets[0].emit('lobby:set-ready', true);
+		const states = await seen;
+		expect(states.every((state) => readyFlagOf(state, 'ready-broadcast-0') === true)).toBe(true);
+	});
+
+	// AC3: an un-ready reaches all six clients too.
+	it('US-1-T-2 shows a player who un-readies as not ready on all six clients', async () => {
+		const sockets = await fullLobbyOfSize('unready-broadcast', 3);
+		await readyUp(sockets[0], 1);
+		const seen = stateOnEveryClient(sockets, (state) => state.readyCount === 0);
+		sockets[0].emit('lobby:set-ready', false);
+		const states = await seen;
+		expect(states.every((state) => readyFlagOf(state, 'unready-broadcast-0') === false)).toBe(true);
+	});
+
+	// AC2: the ready count in each broadcast matches the change.
+	it('US-1-T-2 shows a ready count of 1 on every client after one player readies up', async () => {
+		const sockets = await fullLobbyOfSize('ready-count', 3);
+		const seen = stateOnEveryClient(sockets, (state) => readyFlagOf(state, 'ready-count-0') === true);
+		sockets[0].emit('lobby:set-ready', true);
+		const states = await seen;
+		expect(states.every((state) => state.readyCount === 1)).toBe(true);
+	});
+
+	// AC4: readiness is measured against the chosen lobby size, not a fixed six.
+	it.each([1, 2, 3])('US-1-T-2 reports ready to start once every player in a full lobby of %i per team', async (perTeam) => {
+		const sockets = await fullLobbyOfSize(`ready-start-${perTeam}`, perTeam);
+		for (const [seat, socket] of sockets.slice(0, -1).entries()) await readyUp(socket, seat + 1);
+		const state = await readyUp(sockets[sockets.length - 1], sockets.length);
+		expect(state.readyToStart).toBe(true);
+	});
+
+	// AC5: a full lobby has no open seat on the other team, so the switch is refused.
+	it('US-1-T-2 rejects a readied player switching teams with team-full', async () => {
+		const sockets = await fullLobbyOfSize('ready-switch', 3);
+		await readyUp(sockets[0], 1);
+		const error = nextEvent<{ code: string }>(sockets[0], 'lobby:error');
+		sockets[0].emit('lobby:join-team', 'b');
+		expect(await error).toMatchObject({ code: 'team-full' });
+	});
+
+	// AC5: the refused switch does not touch the player's ready flag.
+	it('US-1-T-2 keeps a readied player ready after a rejected team switch', async () => {
+		const sockets = await fullLobbyOfSize('ready-switch-state', 3);
+		await readyUp(sockets[0], 1);
+		const error = nextEvent(sockets[0], 'lobby:error');
+		sockets[0].emit('lobby:join-team', 'b');
+		await error;
+		expect(readyFlagOf(lobbyService.lobby.snapshot(), 'ready-switch-state-0')).toBe(true);
+	});
+
+	// AC6: a readied player leaving clears every remaining player's ready flag.
+	// Two players ready up first so a remaining player had something to reset.
+	it('US-1-T-2 shows every remaining player as not ready after a readied player leaves', async () => {
+		const sockets = await fullLobbyOfSize('ready-leave', 3);
+		await readyUp(sockets[0], 1);
+		await readyUp(sockets[1], 2);
+		const state = await emitAndWaitForState(sockets[0], 'lobby:leave', undefined, (lobby) => lobby.playerCount === 5);
+		expect(state.players.every((player) => player.ready === false)).toBe(true);
+	});
+
+	// AC6: the broadcast's ready count agrees.
+	it('US-1-T-2 shows a ready count of 0 after a readied player leaves', async () => {
+		const sockets = await fullLobbyOfSize('ready-leave-count', 3);
+		await readyUp(sockets[0], 1);
+		await readyUp(sockets[1], 2);
+		const state = await emitAndWaitForState(sockets[1], 'lobby:leave', undefined, (lobby) => lobby.playerCount === 5);
+		expect(state.readyCount).toBe(0);
+	});
+});

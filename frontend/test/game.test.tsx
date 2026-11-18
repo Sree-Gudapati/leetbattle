@@ -60,6 +60,9 @@
 //  - Clicking "Run" should run the code against CodeService
 // A player's code should only go to their own team
 //  - Editing code should send it to the game (team-only relay), not to the lobby socket
+// US-3-T-2: The match page should show team chat while the game is being played
+//  - While playing, the match page should display a "Team chat" panel
+//  - Sending a comment on the match page should emit "chat:send" on the game socket
 //  (CodeService's fetch and Monaco are mocked; no test touches a backend service)
 // US-6-T-7: Game page should show a workspace switcher above the code editor
 //  - While playing, a "You" workspace tab and one tab per teammate should be shown above the code tabs
@@ -198,7 +201,7 @@ function configureGame(context: Record<string, unknown> = {}) {
 // The page once the socket is up and the server has sent the match. `teammateCode`
 // goes to the context directly (it isn't part of the `game:state` payload).
 function configureConnectedGame(overrides: Record<string, unknown> = {}, teammateCode: Record<string, unknown> = {}) {
-	configureGame({ socket: { connected: true, emit: vi.fn() }, connected: true, game: gameState(overrides), teammateCode });
+	configureGame({ socket: { connected: true, emit: vi.fn(), on: vi.fn(), off: vi.fn() }, connected: true, game: gameState(overrides), teammateCode });
 }
 
 // Matches the NEXT_PUBLIC_CODE_URL fallback in app/editor/controller.tsx.
@@ -813,5 +816,29 @@ describe('game page teammate workspace view', () => {
 		await userEvent.click(screen.getByRole('button', { name: '2' }));
 
 		expect((screen.getByTestId('monaco') as HTMLTextAreaElement).value).toBe('question 2 code for teammate');
+	});
+});
+
+describe('game page team chat', () => {
+	it('US-3-T-2 shows a "Team chat" panel while the game is playing', async () => {
+		configureConnectedGame();
+		render(<GamePage />);
+
+		expect(await screen.findByRole('region', { name: 'Team chat' })).toBeTruthy();
+	});
+
+	it('US-3-T-2 emits chat:send on the game socket when a comment is sent from the match page', async () => {
+		const user = userEvent.setup();
+		// Keep hold of the socket so the test can see what was emitted on it.
+		const socket = { connected: true, emit: vi.fn(), on: vi.fn(), off: vi.fn() };
+		configureGame({ socket, connected: true, game: gameState() });
+		render(<GamePage />);
+
+		await user.type(await screen.findByRole('textbox', { name: 'Message your team' }), 'Question 1 is done');
+		await user.click(screen.getByRole('button', { name: 'Send' }));
+
+		// The editor also sends game:code on this socket, so only chat:send is checked.
+		const chatSends = socket.emit.mock.calls.filter(([event]) => event === 'chat:send');
+		expect(chatSends.map((call) => call.slice(0, 2))).toEqual([['chat:send', { text: 'Question 1 is done' }]]);
 	});
 });

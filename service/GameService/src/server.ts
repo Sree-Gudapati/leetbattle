@@ -16,6 +16,8 @@ const DEFAULT_RECONNECT_GRACE_MS = 30_000;
 const DEFAULT_SUBMIT_COOLDOWN_MS = 5_000;
 // How long players have to ban before play starts with the bans made so far.
 const DEFAULT_BAN_WINDOW_MS = 30_000;
+// The longest team chat message GameService accepts, in characters.
+const MAX_CHAT_LENGTH = 500;
 
 interface ServerOptions {
 	origins?: string[];
@@ -307,6 +309,37 @@ export function createGameServer(app: Express, options: ServerOptions = {}) {
 				displayName: player.displayName,
 				questionId: update.questionId,
 				workspace: update.workspace,
+			});
+		});
+
+		// Team chat (US-3-T-2): saves a player's message to team_messages, then
+		// passes it on to their own team, sender included. The game, team and
+		// user come from the server's roster and the authenticated socket, never
+		// the client. The saved row's id and time are the ones sent out.
+		socket.on('chat:send', async (message: { text?: unknown }, ack?: (_response: { error: string }) => void) => {
+			const reply = typeof ack === 'function' ? ack : () => undefined;
+			if (game.phase === 'ended') return;
+			const text = message?.text;
+			if (typeof text !== 'string') return;
+			if (text.length > MAX_CHAT_LENGTH) return reply({ error: 'Message too long' });
+			let saved: { id: string; sent_at: Date };
+			try {
+				const { rows } = await pool.query(
+					'INSERT INTO team_messages (game_id, team, user_id, text) VALUES ($1, $2, $3, $4) RETURNING id, sent_at',
+					[game.gameId, player.team, user.id, text],
+				);
+				saved = rows[0];
+			} catch (err) {
+				console.error('[game-service] failed to save a chat message', err);
+				return;
+			}
+			io.to(`${gameRoom(game)}:${player.team}`).emit('chat:message', {
+				id: saved.id,
+				userId: user.id,
+				displayName: player.displayName,
+				team: player.team,
+				text,
+				sentAt: saved.sent_at.toISOString(),
 			});
 		});
 
