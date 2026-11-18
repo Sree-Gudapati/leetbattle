@@ -101,7 +101,10 @@ export class AuthAPIService {
 			headers: { 'Content-Type': 'application/json', ...authHeaders() },
 			body: JSON.stringify({ currentPassword, newPassword }),
 		});
-		await parseResponse(res);
+		// AuthService signs out every session issued before the change (US-5-T-13),
+		// this one included, and answers with a fresh token to stay signed in.
+		const body = await parseResponse<{ token?: string } | null>(res);
+		if (body?.token) setToken(body.token);
 	}
 
 	public async updateAccount(name: string): Promise<User> {
