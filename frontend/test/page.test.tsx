@@ -23,7 +23,7 @@ afterEach(() => {
 describe('root page', () => {
 	it('displays the landing page when there are no credentials', () => {
 		render(<Home />);
-		expect(screen.getByText(/Practice under pressure/)).toBeTruthy();
+		expect(screen.getByRole('heading', { level: 1, name: 'LeetBattle' })).toBeTruthy();
 		expect(screen.queryByRole('button', { name: 'Account menu' })).toBeNull();
 	});
 
@@ -35,7 +35,8 @@ describe('root page', () => {
 		// wheel's Open button), so look for it inside the menu list.
 		const menu = screen.getByRole('list', { name: 'Menu' });
 		expect(within(menu).getByRole('link', { name: /Practice/ }).getAttribute('href')).toBe('/editor');
-		expect(screen.queryByText(/Practice under pressure/)).toBeNull();
+		// The landing page's hero cursor (US5-Task14) is not on the home page.
+		expect(screen.queryByTestId('pen-tip')).toBeNull();
 	});
 
 	it('renders nothing while the session is still loading', () => {
