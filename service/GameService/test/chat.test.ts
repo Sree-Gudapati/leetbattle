@@ -152,8 +152,8 @@ async function sendChatAsGameEnds(text: string): Promise<void> {
 // days ago, and resolves with its id.
 async function saveMessageFromDaysAgo(daysAgo: number): Promise<string> {
 	const { rows } = await pool.query<{ id: string }>(
-		"INSERT INTO team_messages (game_id, team, user_id, text, sent_at) VALUES ($1, 'a', $2, 'old message', NOW() - make_interval(days => $3)) RETURNING id",
-		[gameId, players[0].userId, daysAgo],
+		'INSERT INTO team_messages (game_id, team, user_id, text, sent_at) VALUES ($1, $2, $3, $4, NOW() - make_interval(days => $5)) RETURNING id',
+		[gameId, 'a', players[0].userId, 'old message', daysAgo],
 	);
 	return rows[0].id;
 }
@@ -422,7 +422,7 @@ describe('team chat rate limiting', () => {
 });
 
 describe('team chat text with SQL in it', () => {
-	const sql = "'); DROP TABLE team_messages; --";
+	const sql = '\'); DROP TABLE team_messages; --';
 
 	it('US-3-T-4 saves a message containing SQL as plain text', async () => {
 		const row = await sendAndReadSavedRow(sql);
