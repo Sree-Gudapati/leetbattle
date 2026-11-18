@@ -512,7 +512,8 @@ describe('after the game ends', () => {
 
 	it('leaves the players with no active game', async () => {
 		const { game } = await forfeitedGame();
-		const res = await request.get(`/game/${game.players[0].userId}`);
+		// US-6-T-8: the endpoint now needs the player's own login token.
+		const res = await request.get(`/game/${game.players[0].userId}`).set('Authorization', `Bearer ${await tokenFor(game.players[0].userId)}`);
 		expect(res.status).toBe(404);
 	});
 });
