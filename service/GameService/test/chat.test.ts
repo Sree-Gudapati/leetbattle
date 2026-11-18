@@ -397,6 +397,12 @@ describe('team chat rate limiting', () => {
 		expect(answer).toEqual({ error: 'Whoa, slow down!' });
 	});
 
+	it('US-3-T-4 answers an accepted chat:send with { ok: true }', async () => {
+		// The frontend clears the message box only once it hears the message was accepted.
+		const answer = await sockets[0].timeout(2_000).emitWithAck('chat:send', { text: 'hello team' });
+		expect(answer).toEqual({ ok: true });
+	});
+
 	it('US-3-T-4 does not save a rate-limited chat:send to team_messages', async () => {
 		const teammate = nextEvent<ChatMessage>(sockets[1], 'chat:message');
 		sockets[0].emit('chat:send', { text: 'first' });
