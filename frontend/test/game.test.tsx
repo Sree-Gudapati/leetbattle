@@ -101,6 +101,16 @@
 //  - The "Team 1 wins" heading should still be displayed
 //  - The line explaining why the game ended should still be displayed
 //  - The "Back to lobby" link should still be displayed
+// US-6-T-12: The top bar should show the player's connected teammates next to Forfeit
+//  - During a match, the "Teammates" list in the top bar should show each connected teammate's name
+//  - The "Teammates" list should not include the signed-in player
+//  - The "Teammates" list should not include players on the other team
+//  - The "Teammates" list should not include a teammate who is disconnected
+//  - The "Teammates" list should sit to the left of the Forfeit button
+//  - While the game is waiting for players, the "Teammates" list should not be shown
+//  - While the game is banning, the "Teammates" list should not be shown
+//  - Once the game has ended, the "Teammates" list should not be shown
+//  - When every teammate is disconnected, the "Teammates" list should not be shown
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -410,6 +420,98 @@ describe('game page forfeit', () => {
 		await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Forfeit' }));
 
 		expect((forfeitButton() as HTMLButtonElement).disabled).toBe(true);
+	});
+});
+
+// US-6-T-12: the signed-in user is u1 ("Ada") on Team 1, so with the default
+// roster their connected teammates are Grace (u2) and Katherine (u3); Alan,
+// Edsger and Margaret are on Team 2 and must never be listed.
+describe('game page teammates next to Forfeit', () => {
+	// The "Teammates" list, looked up inside the top bar so a teammate list
+	// anywhere else on the page can't satisfy the tests. The top bar is the
+	// first banner; the ban screen renders a <header> of its own below it.
+	function teammatesList() {
+		return within(screen.getAllByRole('banner')[0]).queryByRole('list', { name: 'Teammates' });
+	}
+
+	// The names in the "Teammates" list, in the order shown.
+	function teammateNames() {
+		const list = teammatesList();
+		return list ? within(list).getAllByRole('listitem').map((item) => (item.textContent ?? '').trim()) : [];
+	}
+
+	// The default roster with the given players marked disconnected.
+	function rosterWithDisconnected(...userIds: string[]) {
+		return roster.map((entry) => (userIds.includes(entry.userId) ? { ...entry, connected: false } : entry));
+	}
+
+	it('US-6-T-12 lists each connected teammate by name in the top bar', () => {
+		configureConnectedGame();
+		render(<GamePage />);
+
+		expect(teammateNames()).toEqual(['Grace', 'Katherine']);
+	});
+
+	it('US-6-T-12 does not list the signed-in player', () => {
+		configureConnectedGame();
+		render(<GamePage />);
+
+		expect(teammateNames()).not.toContain('Ada');
+	});
+
+	it('US-6-T-12 does not list players on the other team', () => {
+		configureConnectedGame();
+		render(<GamePage />);
+
+		// None of Team 2's players may appear.
+		expect(teammateNames().filter((name) => ['Alan', 'Edsger', 'Margaret'].includes(name))).toEqual([]);
+	});
+
+	it('US-6-T-12 does not list a disconnected teammate', () => {
+		configureConnectedGame({ players: rosterWithDisconnected('u2') });
+		render(<GamePage />);
+
+		expect(teammateNames()).not.toContain('Grace');
+	});
+
+	it('US-6-T-12 puts the teammates to the left of the Forfeit button', () => {
+		configureConnectedGame();
+		render(<GamePage />);
+
+		const forfeit = screen.getByRole('button', { name: 'Forfeit' });
+		// DOCUMENT_POSITION_FOLLOWING: the Forfeit button comes after the list.
+		expect(teammatesList()!.compareDocumentPosition(forfeit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+	});
+
+	it('US-6-T-12 hides the teammates while waiting for players', () => {
+		configureConnectedGame({ phase: 'waiting' });
+		render(<GamePage />);
+
+		expect(teammatesList()).toBeNull();
+	});
+
+	it('US-6-T-12 hides the teammates while banning', () => {
+		// The ban screen needs each problem's topics and ban state.
+		const banPool = problemPool.map((entry) => ({ ...entry, topics: ['Array'], bannedBy: null }));
+		configureConnectedGame({ phase: 'banning', banSecondsRemaining: 25, problemPool: banPool });
+		render(<GamePage />);
+
+		expect(teammatesList()).toBeNull();
+	});
+
+	it('US-6-T-12 hides the teammates once the game has ended', () => {
+		// Still connected and still "playing" in the last game:state, but game:ended has arrived.
+		configureGame({ socket: { connected: true, emit: vi.fn(), on: vi.fn(), off: vi.fn() }, connected: true, game: gameState(), result: { winner: 'a', reason: 'time' } });
+		render(<GamePage />);
+
+		expect(teammatesList()).toBeNull();
+	});
+
+	it('US-6-T-12 hides the teammates when every teammate is disconnected', () => {
+		configureConnectedGame({ players: rosterWithDisconnected('u2', 'u3') });
+		render(<GamePage />);
+
+		expect(teammatesList()).toBeNull();
 	});
 });
 
