@@ -372,3 +372,29 @@ describe('chat errors going away', () => {
 		expect(screen.queryByRole('alert')).toBeNull();
 	});
 });
+
+describe('unsafe text in chat messages', () => {
+	// Shows an incoming chat:message with `text` and returns the chat panel.
+	function showIncoming(text: string): HTMLElement {
+		const fake = renderChatWithSocket();
+		act(() => fake.fire('chat:message', { ...fromGrace, text }));
+		return screen.getByRole('region', { name: 'Team chat' });
+	}
+
+	it('US-3-T-4 shows HTML in a message as text', () => {
+		const panel = showIncoming('<b>hi</b>');
+
+		expect(screen.getByTestId('chat-text').textContent).toBe('<b>hi</b>');
+		// Had it been rendered as HTML, the panel would have a bold element.
+		expect(panel.querySelector('b')).toBeNull();
+	});
+
+	it('US-3-T-4 does not run scripts in a message', () => {
+		const panel = showIncoming('<script>alert("hacked")</script><img src="x" onerror="alert(\'hacked\')">');
+
+		expect(screen.getByTestId('chat-text').textContent).toBe('<script>alert("hacked")</script><img src="x" onerror="alert(\'hacked\')">');
+		// No script or image (whose onerror would run) made it into the page.
+		expect(panel.querySelector('script')).toBeNull();
+		expect(panel.querySelector('img')).toBeNull();
+	});
+});
