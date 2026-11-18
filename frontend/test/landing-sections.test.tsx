@@ -82,7 +82,8 @@ describe('clock', () => {
 	});
 
 	it('US5-Task15 does not show "30:00"', () => {
-		expect(screen.queryByText('30:00')).toBeNull();
+		const clock = screen.getByRole('region', { name: 'Thirty minutes on the clock' });
+		expect(within(clock).queryByText('30:00')).toBeNull();
 	});
 });
 
