@@ -2,7 +2,7 @@ import Link from 'next/link';
 import HomeNav from '../_shared/home-nav';
 import Wordmark from '../_shared/wordmark';
 import Intro from './intro';
-import LiveDemo from './live-demo';
+import MatchDemo from './match-demo';
 import ScrollSections from './scroll-sections';
 
 export default function LandingPage() {
@@ -20,36 +20,31 @@ export default function LandingPage() {
 					</div>
 				</nav>
 
-				<section className="flex flex-wrap items-center gap-16 pt-16 pb-12 sm:pt-22">
-					<div className="flex min-w-0 flex-[1_1_520px] flex-col gap-7">
-						<h1 className="lb-reveal m-0 text-[clamp(42px,4.8vw,68px)] font-extrabold leading-[1.02] tracking-[-0.035em]">
-							Practice under pressure.
-							<br />
-							<span className="text-primary">Win as a team.</span>
-						</h1>
-						<p className="lb-reveal m-0 max-w-[480px] text-lg leading-relaxed text-muted" style={{ '--d': '0.15s' } as React.CSSProperties}>
-							Two teams of three solve the same coding problems in a shared browser IDE. Watch your teammates&apos; code, leave comments, and submit before time runs out.
-						</p>
-						<div className="lb-reveal flex flex-wrap gap-3" style={{ '--d': '0.3s' } as React.CSSProperties}>
-							<Link href="/login" className="inline-flex h-[54px] items-center gap-2.5 rounded-[14px] bg-primary px-[26px] text-base font-bold text-on-primary hover:opacity-90">
-								Find a match
-								<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-									<path d="M5 12h14M13 6l6 6-6 6" />
-								</svg>
-							</Link>
-							<Link href="/lobby?private=1" className="inline-flex h-[54px] items-center rounded-[14px] border border-line px-6 text-base font-semibold hover:bg-raised">
-								Create private lobby
-							</Link>
-						</div>
-					</div>
-
-					<div className="lb-reveal min-w-0 flex-[1_1_480px]" style={{ '--d': '0.2s' } as React.CSSProperties}>
-						<LiveDemo />
+				{/* US-5-T-14: the wordmark draws in behind the page loader's pen tip, which
+				    then stays after it as a blinking cursor (lb-hero-* in globals.css). */}
+				<section className="flex flex-col items-center gap-7 pt-16 pb-12 text-center sm:pt-22">
+					<h1 className="relative m-0 text-[clamp(64px,10vw,140px)] font-black leading-none tracking-[-0.04em]">
+						<span className="lb-hero-word block">Leet<span className="text-primary">Battle</span></span>
+						<span data-testid="pen-tip" aria-hidden="true" className="lb-hero-tip" />
+					</h1>
+					<p className="lb-reveal m-0 text-xl text-muted" style={{ '--d': '0.6s' } as React.CSSProperties}>
+						Team coding battles, live in your browser
+					</p>
+					<div className="lb-reveal flex flex-wrap justify-center gap-3" style={{ '--d': '0.75s' } as React.CSSProperties}>
+						<Link href="/login" className="inline-flex h-[54px] items-center gap-2.5 rounded-[14px] bg-primary px-[26px] text-base font-bold text-on-primary hover:opacity-90">
+							Find a match
+							<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+								<path d="M5 12h14M13 6l6 6-6 6" />
+							</svg>
+						</Link>
+						<Link href="/lobby?private=1" className="inline-flex h-[54px] items-center rounded-[14px] border border-line px-6 text-base font-semibold hover:bg-raised">
+							Private lobby
+						</Link>
 					</div>
 				</section>
 
-				<div className="flex flex-col items-center gap-2.5 pt-8 pb-18 font-mono h-[50px] text-[11px] tracking-[0.3em] text-muted" aria-hidden="true">
-
+				<div className="mx-auto max-w-[1100px] pt-6 pb-20">
+					<MatchDemo />
 				</div>
 
 				<ScrollSections />
