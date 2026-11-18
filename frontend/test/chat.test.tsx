@@ -300,3 +300,25 @@ describe('showing comments the server delivers', () => {
 		expect(screen.getByRole('alert').textContent).toBe('Message too long');
 	});
 });
+
+// US-3-T-4: chat safeguards in the chat panel (all tests use a mocked socket, no backend)
+
+// Types `text`, clicks Send, and returns the acknowledgement callback the
+// panel passed with chat:send, so a test can answer the way GameService would.
+async function sendAndGetAnswer(fake: ReturnType<typeof fakeSocket>, text = 'Question 1 is done') {
+	const user = userEvent.setup();
+	await user.type(messageBox(), text);
+	await user.click(sendButton());
+	return fake.socket.emit.mock.calls[0][2] as (_response: { ok: true } | { error: string }) => void;
+}
+
+describe('rejected messages', () => {
+	it('US-3-T-4 shows "Whoa, slow down!" in the chat panel when a message is rate limited', async () => {
+		const fake = renderChatWithSocket();
+		const answer = await sendAndGetAnswer(fake);
+
+		act(() => answer({ error: 'Whoa, slow down!' }));
+
+		expect(screen.getByRole('alert').textContent).toBe('Whoa, slow down!');
+	});
+});
