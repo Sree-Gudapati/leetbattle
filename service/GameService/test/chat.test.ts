@@ -369,3 +369,15 @@ describe('team chat with two games running', () => {
 		expect(rows[0].count).toBe(0);
 	});
 });
+
+describe('team chat rate limiting', () => {
+	it('US-3-T-4 rejects a second chat:send from the same player within 1 second with "Whoa, slow down!"', async () => {
+		// The first message is accepted; wait until a teammate has it.
+		const teammate = nextEvent<ChatMessage>(sockets[1], 'chat:message');
+		sockets[0].emit('chat:send', { text: 'first' });
+		await teammate;
+		// Sent straight after, well within 1 second of the first.
+		const answer = await sockets[0].timeout(2_000).emitWithAck('chat:send', { text: 'second' });
+		expect(answer).toEqual({ error: 'Whoa, slow down!' });
+	});
+});
