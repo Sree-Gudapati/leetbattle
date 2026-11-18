@@ -330,4 +330,13 @@ describe('rejected messages', () => {
 
 		expect(messageBox().value).toBe('Question 1 is done');
 	});
+
+	it('US-3-T-4 empties the message box once a message is accepted', async () => {
+		const fake = renderChatWithSocket();
+		const answer = await sendAndGetAnswer(fake);
+
+		await act(async () => answer({ ok: true }));
+
+		expect(messageBox().value).toBe('');
+	});
 });
