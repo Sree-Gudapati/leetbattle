@@ -100,6 +100,7 @@ const gameMocks = vi.hoisted(() => ({
 	clearError: vi.fn(),
 	forfeit: vi.fn(),
 	ban: vi.fn(),
+	pick: vi.fn(),
 	submit: vi.fn(),
 	shareCode: vi.fn(),
 	// socket.io-client's io(): the editor must never open a lobby socket in a match.
@@ -194,6 +195,7 @@ function configureGame(context: Record<string, unknown> = {}) {
 		clearError: gameMocks.clearError,
 		forfeit: gameMocks.forfeit,
 		ban: gameMocks.ban,
+		pick: gameMocks.pick,
 		submit: gameMocks.submit,
 		shareCode: gameMocks.shareCode,
 		teammateCode: {},
@@ -572,6 +574,96 @@ describe('game page during the ban phase', () => {
 	});
 });
 
+describe('game page during the pick phase', () => {
+	// The three problems left after a 3v3's bans, as GameService sends them
+	// while picking: each carries who (if anyone) on each team has picked it.
+	const pickPool = [
+		{ taskId: 'search-insert-position', questionId: 4, difficulty: 'Easy', topics: ['Binary Search'], pickedBy: { a: null, b: null } },
+		{ taskId: 'number-of-islands', questionId: 7, difficulty: 'Medium', topics: ['Graph'], pickedBy: { a: null, b: null } },
+		{ taskId: 'course-schedule', questionId: 9, difficulty: 'Medium', topics: ['Topological Sort'], pickedBy: { a: null, b: null } },
+	];
+
+	// Grace (u2, Team 1) has picked the first problem.
+	const poolWithGracePick = pickPool.map((entry) => (entry.questionId === 4
+		? { ...entry, pickedBy: { ...entry.pickedBy, a: { userId: 'u2', displayName: 'Grace', team: 'a' } } }
+		: entry));
+
+	// The page while the picks are going on, 25 seconds left to pick.
+	function configurePicking(overrides: Record<string, unknown> = {}) {
+		configureConnectedGame({ phase: 'picking', startedAt: null, pickSecondsRemaining: 25, problemPool: pickPool, ...overrides });
+	}
+
+	it('shows "Pick a question" while the game is picking', () => {
+		configurePicking();
+		render(<GamePage />);
+
+		expect(screen.getByRole('heading', { name: 'Pick a question' })).toBeTruthy();
+	});
+
+	it('hides the code editor while the game is picking', () => {
+		configurePicking();
+		render(<GamePage />);
+
+		expect(screen.queryByTestId('monaco')).toBeNull();
+	});
+
+	it('hides the Forfeit button while the game is picking', () => {
+		configurePicking();
+		render(<GamePage />);
+
+		expect(screen.queryByRole('button', { name: 'Forfeit' })).toBeNull();
+	});
+
+	it('shows the time left to pick while the game is picking', () => {
+		configurePicking();
+		render(<GamePage />);
+
+		// 25 seconds left in the pick window, shown as minutes and seconds.
+		expect(screen.getByText('0:25')).toBeTruthy();
+	});
+
+	it('does not show "Pick a question" once the game is playing', () => {
+		configureConnectedGame();
+		render(<GamePage />);
+
+		expect(screen.queryByRole('heading', { name: 'Pick a question' })).toBeNull();
+	});
+
+	it('shows each problem in the pool by its topics on the pick screen', () => {
+		configurePicking();
+		render(<GamePage />);
+
+		// Every topic of every problem, in pool order.
+		expect(screen.getAllByTestId('topic').map((topic) => topic.textContent))
+			.toEqual(pickPool.flatMap((entry) => entry.topics));
+	});
+
+	it('sends the problem\'s questionId to the game when "Pick this question" is clicked', async () => {
+		const user = userEvent.setup();
+		configurePicking();
+		render(<GamePage />);
+
+		// The second button belongs to question 2, "number-of-islands", questionId 7.
+		await user.click(screen.getAllByRole('button', { name: /Pick this question/ })[1]);
+
+		expect(gameMocks.pick).toHaveBeenCalledWith(7);
+	});
+
+	it('shows "Picked by <name>" on a problem a teammate picked', () => {
+		configurePicking({ problemPool: poolWithGracePick });
+		render(<GamePage />);
+
+		expect(screen.getByText(/Picked by/).textContent).toContain('Grace');
+	});
+
+	it('shows "1 of 3 picks made" with Ada\'s three-player team and one pick made', () => {
+		configurePicking({ problemPool: poolWithGracePick });
+		render(<GamePage />);
+
+		expect(screen.getByText('1 of 3 picks made')).toBeTruthy();
+	});
+});
+
 describe('game page editor after the bans', () => {
 	// makeProblem(1, ...) titles itself "1. Problem Number 1" once loaded.
 	async function renderPlayingGame() {
@@ -619,6 +711,19 @@ describe('game page editor after the bans', () => {
 		// The pool's question_ids are 1, 2 and 3.
 		expect(requestsOf(fetchMock).map((request) => request.url))
 			.toEqual([`${CODE_URL}/problem/1`, `${CODE_URL}/problem/2`, `${CODE_URL}/problem/3`]);
+	});
+
+	it('US-6-T-10 opens the editor on the question the player picked, not just the first in the pool', async () => {
+		stubCodeService();
+		// Ada (u1, Team 1) picked question 2 on the pick screen.
+		const pickedPool = problemPool.map((entry) => ({
+			...entry,
+			pickedBy: { a: entry.questionId === 2 ? { userId: 'u1', displayName: 'Ada', team: 'a' } : null, b: null },
+		}));
+		configureConnectedGame({ problemPool: pickedPool });
+		render(<GamePage />);
+
+		expect(await screen.findByRole('heading', { name: /2\. Problem Number 2/ })).toBeTruthy();
 	});
 
 	it('US-6-T-6 submits the current question\'s id and code to the game', async () => {
